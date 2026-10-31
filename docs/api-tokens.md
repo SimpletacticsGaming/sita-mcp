@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS mcp_tokens
     scopes       text[]                 NOT NULL DEFAULT '{wiki:read}',
     created_at   timestamp              NOT NULL,
     last_used_at timestamp,
-    expires_at   timestamp,                              -- NULL = läuft nie ab
+    expires_at   timestamp,                              -- NULL = läuft nie ab (vorerst nicht vergeben, siehe Ablaufzeiten)
     revoked_at   timestamp                               -- gesetzt statt Löschen, für die Nachvollziehbarkeit
 );
 
@@ -105,7 +105,7 @@ Nur mit einer normalen **Session** (`authentication`-Header) nutzbar. Mit einem 
 | Methode | Pfad | Body | Antwort |
 |---|---|---|---|
 | GET | `/api/tokens` | – | `200 [{ id, name, scopes, createdAt, lastUsedAt, expiresAt }]`, nur nicht widerrufene; nie der Token-Klartext |
-| POST | `/api/tokens` | `{ "name": "Laptop", "expiresInDays": 90 }` (`expiresInDays` optional, `null` = kein Ablauf) | `201 { id, name, scopes, createdAt, expiresAt, token }`, `token` nur hier |
+| POST | `/api/tokens` | `{ "name": "Laptop", "expiresInDays": 90 }` (`expiresInDays` Pflicht, erlaubt: 30, 90, 365) | `201 { id, name, scopes, createdAt, expiresAt, token }`, `token` nur hier |
 | DELETE | `/api/tokens/{id}` | – | `204`; setzt `revoked_at`. Fremde oder unbekannte id: `404` |
 
 Regeln, die das Backend durchsetzen sollte:
@@ -120,7 +120,7 @@ Regeln, die das Backend durchsetzen sollte:
 Im Profil ein Bereich **„MCP-Tokens“**:
 
 - **Liste** der eigenen Tokens mit Name, erstellt am, zuletzt genutzt, läuft ab am, jeweils mit **Widerrufen**-Button und Rückfrage.
-- **Neues Token:** Dialog mit Name und Ablauf (30 Tage / 90 Tage / 1 Jahr / nie, Standard 90 Tage).
+- **Neues Token:** Dialog mit Name und Ablauf (30 Tage / 90 Tage / 1 Jahr, Standard 90 Tage). Tokens ohne Ablauf gibt es vorerst nicht: Vergessene Tokens sollen von selbst auslaufen.
 - **Nach dem Erstellen:** Das Token einmalig anzeigen, mit Kopieren-Button und dem Hinweis, dass es nicht noch einmal angezeigt wird. Darunter fertige Snippets für Claude Code und Claude Desktop zum Kopieren (siehe README), mit dem Token schon eingesetzt.
 
 ## Verhalten des MCP
