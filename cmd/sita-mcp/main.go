@@ -47,7 +47,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	client := sita.NewClient(cfg.BackendURL, cfg.AuthHeader, &http.Client{Timeout: 15 * time.Second})
+	client := sita.NewClient(cfg.BackendURL, &http.Client{Timeout: 15 * time.Second})
 	svc := wiki.NewService(client, wiki.Options{
 		PublicURL: cfg.WikiPublicURL,
 		IndexTTL:  cfg.IndexTTL,
@@ -56,7 +56,7 @@ func run() error {
 	logger.Info("starting sita-mcp", "version", version, "transport", cfg.Transport, "backend", cfg.BackendURL)
 
 	if cfg.Transport == config.TransportStdio {
-		creds := sita.Credentials{Username: cfg.Username, Password: cfg.Password, Session: cfg.Session}
+		creds := sita.Credentials{Token: cfg.Token}
 		server := mcpserver.New(svc, func(*mcp.CallToolRequest) (sita.Credentials, error) { return creds, nil }, version)
 		return server.Run(ctx, &mcp.StdioTransport{})
 	}
@@ -64,14 +64,14 @@ func run() error {
 }
 
 func serveHTTP(ctx context.Context, cfg config.Config, client *sita.Client, svc *wiki.Service, logger *slog.Logger) error {
-	// Every request carries its own credentials, checked by auth.Require before it reaches the server.
+	// Every request carries its own token, checked by the guard before it reaches the server.
 	server := mcpserver.New(svc, func(req *mcp.CallToolRequest) (sita.Credentials, error) {
 		if req.Extra != nil {
 			if creds, ok := auth.FromHeader(req.Extra.Header); ok {
 				return creds, nil
 			}
 		}
-		return sita.Credentials{}, errors.New("missing sita credentials in Authorization header")
+		return sita.Credentials{}, errors.New("missing MCP token in Authorization header")
 	}, version)
 
 	// Stateless: no session affinity is needed, so the service can run with several replicas.
@@ -80,9 +80,9 @@ func serveHTTP(ctx context.Context, cfg config.Config, client *sita.Client, svc 
 		Logger:    logger,
 	})
 
-	guard := &auth.Guard{Verifier: client, ClientIPHeader: cfg.ClientIPHeader, Logger: logger}
-	if cfg.LoginMaxFailures > 0 {
-		guard.Limiter = auth.NewLimiter(cfg.LoginMaxFailures, cfg.LoginBlockWindow)
+	guard := &auth.Guard{Verifier: client, ClientIPHeader: cfg.ClientIPHeader, VerifyCacheTTL: cfg.TokenCacheTTL, Logger: logger}
+	if cfg.AuthMaxFailures > 0 {
+		guard.Limiter = auth.NewLimiter(cfg.AuthMaxFailures, cfg.AuthBlockWindow)
 	}
 
 	mux := http.NewServeMux()

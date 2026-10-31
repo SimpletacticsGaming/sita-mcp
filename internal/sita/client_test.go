@@ -3,40 +3,50 @@ package sita_test
 import (
 	"context"
 	"errors"
-	"sync"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/SimpletacticsGaming/sita-mcp/internal/sita"
 	"github.com/SimpletacticsGaming/sita-mcp/internal/sita/sitatest"
 )
 
-var alice = sita.Credentials{Username: "alice", Password: "secret"}
+var (
+	alice = sita.Credentials{Token: sitatest.AliceToken}
+	bob   = sita.Credentials{Token: sitatest.BobToken}
+)
 
 func newClient(b *sitatest.Backend) *sita.Client {
-	return sita.NewClient(b.URL, "authentication", b.Client())
+	return sita.NewClient(b.URL, b.Client())
 }
 
-func TestLoginIsCachedAcrossCalls(t *testing.T) {
+func TestErrors(t *testing.T) {
 	b := sitatest.New(t)
 	c := newClient(b)
 	ctx := context.Background()
 
-	var wg sync.WaitGroup
-	for range 10 {
-		wg.Go(func() {
-			if _, err := c.Topic(ctx, alice, 0); err != nil {
-				t.Error(err)
+	tests := []struct {
+		name string
+		call func() error
+		want error
+	}{
+		{"forbidden", func() error { _, err := c.Entry(ctx, bob, 5); return err }, sita.ErrForbidden},
+		{"not found", func() error { _, err := c.Entry(ctx, alice, 99); return err }, sita.ErrNotFound},
+		{"unknown type", func() error { _, err := c.NodeType(ctx, alice, 99); return err }, sita.ErrNotFound},
+		{"closed poll", func() error { _, err := c.Poll(ctx, alice, 6); return err }, sita.ErrPollClosed},
+		{"invalid token", func() error { _, err := c.Topic(ctx, sita.Credentials{Token: "bogus"}, 0); return err }, sita.ErrUnauthorized},
+		{"no token", func() error { _, err := c.Topic(ctx, sita.Credentials{}, 0); return err }, sita.ErrUnauthorized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(); !errors.Is(err, tt.want) {
+				t.Fatalf("err = %v, want %v", err, tt.want)
 			}
 		})
 	}
-	wg.Wait()
-
-	if got := b.Logins(); got != 1 {
-		t.Fatalf("logins = %d, want 1", got)
-	}
 }
 
-func TestReloginAfterSessionExpired(t *testing.T) {
+func TestRevokedTokenIsRejected(t *testing.T) {
 	b := sitatest.New(t)
 	c := newClient(b)
 	ctx := context.Background()
@@ -44,45 +54,9 @@ func TestReloginAfterSessionExpired(t *testing.T) {
 	if _, err := c.Topic(ctx, alice, 0); err != nil {
 		t.Fatal(err)
 	}
-	b.ExpireSessions()
-	topic, err := c.Topic(ctx, alice, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if topic.Topic != "Regeln" {
-		t.Fatalf("topic = %q", topic.Topic)
-	}
-	if got := b.Logins(); got != 2 {
-		t.Fatalf("logins = %d, want 2", got)
-	}
-}
-
-func TestErrors(t *testing.T) {
-	b := sitatest.New(t)
-	c := newClient(b)
-	ctx := context.Background()
-	bob := sita.Credentials{Username: "bob", Password: "hunter2"}
-
-	tests := []struct {
-		name  string
-		creds sita.Credentials
-		call  func(sita.Credentials) error
-		want  error
-	}{
-		{"wrong password", sita.Credentials{Username: "alice", Password: "nope"}, func(cr sita.Credentials) error { _, err := c.Topic(ctx, cr, 0); return err }, sita.ErrLoginFailed},
-		{"forbidden", bob, func(cr sita.Credentials) error { _, err := c.Entry(ctx, cr, 5); return err }, sita.ErrForbidden},
-		{"not found", alice, func(cr sita.Credentials) error { _, err := c.Entry(ctx, cr, 99); return err }, sita.ErrNotFound},
-		{"unknown type", alice, func(cr sita.Credentials) error { _, err := c.NodeType(ctx, cr, 99); return err }, sita.ErrNotFound},
-		{"closed poll", alice, func(cr sita.Credentials) error { _, err := c.Poll(ctx, cr, 6); return err }, sita.ErrPollClosed},
-		{"invalid session", sita.Credentials{Session: "bogus"}, func(cr sita.Credentials) error { _, err := c.Topic(ctx, cr, 0); return err }, sita.ErrUnauthorized},
-		{"no credentials", sita.Credentials{}, func(cr sita.Credentials) error { _, err := c.Topic(ctx, cr, 0); return err }, sita.ErrUnauthorized},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if err := tt.call(tt.creds); !errors.Is(err, tt.want) {
-				t.Fatalf("err = %v, want %v", err, tt.want)
-			}
-		})
+	b.Revoke(sitatest.AliceToken)
+	if _, err := c.Topic(ctx, alice, 0); !errors.Is(err, sita.ErrUnauthorized) {
+		t.Fatalf("err = %v, want ErrUnauthorized", err)
 	}
 }
 
@@ -102,7 +76,7 @@ func TestParentAndChildren(t *testing.T) {
 		t.Fatalf("root parent err = %v", err)
 	}
 
-	children, err := c.Children(ctx, sita.Credentials{Username: "bob", Password: "hunter2"}, 0)
+	children, err := c.Children(ctx, bob, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,16 +90,27 @@ func TestVerify(t *testing.T) {
 	c := newClient(b)
 	ctx := context.Background()
 
-	if err := c.Verify(ctx, alice); err != nil {
-		t.Fatalf("alice: %v", err)
+	info, err := c.Verify(ctx, bob)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := c.Verify(ctx, sita.Credentials{Session: b.Session("bob")}); err != nil {
-		t.Fatalf("bob session: %v", err)
+	if info.Username != "bob" {
+		t.Fatalf("info = %+v", info)
 	}
-	if err := c.Verify(ctx, sita.Credentials{Session: "bogus"}); !errors.Is(err, sita.ErrUnauthorized) {
-		t.Fatalf("bogus session: %v", err)
+	if _, err := c.Verify(ctx, sita.Credentials{Token: "bogus"}); !errors.Is(err, sita.ErrUnauthorized) {
+		t.Fatalf("bogus token: %v", err)
 	}
-	if err := c.Verify(ctx, sita.Credentials{Username: "alice", Password: "x"}); !errors.Is(err, sita.ErrLoginFailed) {
-		t.Fatalf("wrong password: %v", err)
+}
+
+func TestVerifyTreatsForbiddenAsUnauthorized(t *testing.T) {
+	// Spring Security answers unauthenticated requests with 403 unless configured otherwise.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := sita.NewClient(srv.URL, srv.Client()).Verify(context.Background(), alice)
+	if !errors.Is(err, sita.ErrUnauthorized) {
+		t.Fatalf("err = %v, want ErrUnauthorized", err)
 	}
 }

@@ -27,19 +27,18 @@ type Config struct {
 
 	BackendURL    string
 	WikiPublicURL string
-	AuthHeader    string
 
-	// Credentials for stdio mode. In HTTP mode every client sends its own.
-	Username string
-	Password string
-	Session  string
+	// Token is the MCP API token for stdio mode. In HTTP mode every client sends its own.
+	Token string
 
 	IndexTTL      time.Duration
 	IndexMaxNodes int
 
-	// Failed-login throttling in HTTP mode, per client IP and per username.
-	LoginMaxFailures int
-	LoginBlockWindow time.Duration
+	// Throttling of clients sending invalid tokens in HTTP mode, per client IP.
+	AuthMaxFailures int
+	AuthBlockWindow time.Duration
+	// TokenCacheTTL is how long an accepted token is trusted before asking the backend again.
+	TokenCacheTTL time.Duration
 	// ClientIPHeader is a header set by the trusted reverse proxy, e.g. X-Forwarded-For.
 	ClientIPHeader string
 
@@ -53,10 +52,7 @@ func Load(getenv func(string) string) (Config, error) {
 		HTTPAddr:      withDefault(getenv("MCP_HTTP_ADDR"), ":8080"),
 		BackendURL:    strings.TrimRight(withDefault(getenv("SITA_BACKEND_URL"), "https://simpletactics.de/backend"), "/"),
 		WikiPublicURL: withDefault(getenv("SITA_WIKI_PUBLIC_URL"), "https://simpletactics.de/wiki/?ar="),
-		AuthHeader:    withDefault(getenv("SITA_AUTH_HEADER"), "authentication"),
-		Username:      getenv("SITA_USERNAME"),
-		Password:      getenv("SITA_PASSWORD"),
-		Session:       getenv("SITA_SESSION"),
+		Token:         getenv("SITA_TOKEN"),
 
 		ClientIPHeader: getenv("MCP_CLIENT_IP_HEADER"),
 	}
@@ -74,18 +70,21 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.IndexMaxNodes, err = strconv.Atoi(withDefault(getenv("WIKI_INDEX_MAX_NODES"), "2000")); err != nil || cfg.IndexMaxNodes < 1 {
 		return Config{}, fmt.Errorf("WIKI_INDEX_MAX_NODES must be a positive integer")
 	}
-	if cfg.LoginMaxFailures, err = strconv.Atoi(withDefault(getenv("MCP_LOGIN_MAX_FAILURES"), "5")); err != nil || cfg.LoginMaxFailures < 0 {
-		return Config{}, fmt.Errorf("MCP_LOGIN_MAX_FAILURES must be a non-negative integer (0 disables the limit)")
+	if cfg.AuthMaxFailures, err = strconv.Atoi(withDefault(getenv("MCP_AUTH_MAX_FAILURES"), "5")); err != nil || cfg.AuthMaxFailures < 0 {
+		return Config{}, fmt.Errorf("MCP_AUTH_MAX_FAILURES must be a non-negative integer (0 disables the limit)")
 	}
-	if cfg.LoginBlockWindow, err = time.ParseDuration(withDefault(getenv("MCP_LOGIN_BLOCK_WINDOW"), "15m")); err != nil {
-		return Config{}, fmt.Errorf("MCP_LOGIN_BLOCK_WINDOW: %w", err)
+	if cfg.AuthBlockWindow, err = time.ParseDuration(withDefault(getenv("MCP_AUTH_BLOCK_WINDOW"), "15m")); err != nil {
+		return Config{}, fmt.Errorf("MCP_AUTH_BLOCK_WINDOW: %w", err)
+	}
+	if cfg.TokenCacheTTL, err = time.ParseDuration(withDefault(getenv("MCP_TOKEN_CACHE_TTL"), "1m")); err != nil {
+		return Config{}, fmt.Errorf("MCP_TOKEN_CACHE_TTL: %w", err)
 	}
 	if err = cfg.LogLevel.UnmarshalText([]byte(withDefault(getenv("LOG_LEVEL"), "info"))); err != nil {
 		return Config{}, fmt.Errorf("LOG_LEVEL: %w", err)
 	}
 
-	if cfg.Transport == TransportStdio && cfg.Session == "" && (cfg.Username == "" || cfg.Password == "") {
-		return Config{}, fmt.Errorf("stdio mode needs SITA_USERNAME and SITA_PASSWORD (or SITA_SESSION)")
+	if cfg.Transport == TransportStdio && cfg.Token == "" {
+		return Config{}, fmt.Errorf("stdio mode needs SITA_TOKEN, an MCP token created on simpletactics.de")
 	}
 	return cfg, nil
 }

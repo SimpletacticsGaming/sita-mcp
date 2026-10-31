@@ -237,8 +237,8 @@ func toolError(err error) error {
 		return errors.New("you do not have permission to read this wiki node")
 	case errors.Is(err, sita.ErrNotFound):
 		return errors.New("wiki node not found; use wiki_search or wiki_get_tree to find valid ids")
-	case errors.Is(err, sita.ErrLoginFailed), errors.Is(err, sita.ErrUnauthorized):
-		return fmt.Errorf("%w; check the sita credentials configured for this MCP server", err)
+	case errors.Is(err, sita.ErrUnauthorized):
+		return fmt.Errorf("%w; the user needs to create a new MCP token on simpletactics.de and configure it for this MCP server", err)
 	}
 	return err
 }

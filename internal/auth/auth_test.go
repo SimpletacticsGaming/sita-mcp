@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,13 +20,11 @@ func TestFromHeader(t *testing.T) {
 		want   sita.Credentials
 		ok     bool
 	}{
-		{"Basic YWxpY2U6c2VjcmV0", sita.Credentials{Username: "alice", Password: "secret"}, true},
-		{"basic YWxpY2U6c2VjcmV0", sita.Credentials{Username: "alice", Password: "secret"}, true},
-		{"Bearer 1234-abcd", sita.Credentials{Session: "1234-abcd"}, true},
-		{"Basic YWxpY2U6", sita.Credentials{}, false}, // empty password
-		{"Basic !!!", sita.Credentials{}, false},
+		{"Bearer sita_mcp_abc", sita.Credentials{Token: "sita_mcp_abc"}, true},
+		{"bearer sita_mcp_abc ", sita.Credentials{Token: "sita_mcp_abc"}, true},
 		{"Bearer ", sita.Credentials{}, false},
-		{"Token x", sita.Credentials{}, false},
+		{"Basic YWxpY2U6c2VjcmV0", sita.Credentials{}, false},
+		{"sita_mcp_abc", sita.Credentials{}, false},
 		{"", sita.Credentials{}, false},
 	}
 	for _, tt := range tests {
@@ -36,22 +35,18 @@ func TestFromHeader(t *testing.T) {
 	}
 }
 
-type verifierFunc func(sita.Credentials) error
+// fakeVerifier accepts the token "good" and counts its calls.
+type fakeVerifier struct{ calls atomic.Int32 }
 
-func (f verifierFunc) Verify(_ context.Context, c sita.Credentials) error { return f(c) }
+func (f *fakeVerifier) Verify(_ context.Context, c sita.Credentials) (sita.TokenInfo, error) {
+	f.calls.Add(1)
+	if c.Token == "good" {
+		return sita.TokenInfo{Username: "alice"}, nil
+	}
+	return sita.TokenInfo{}, sita.ErrUnauthorized
+}
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
-
-// alice/secret and the session "good" are valid, everything else fails.
-var verifier = verifierFunc(func(c sita.Credentials) error {
-	if c.Session == "good" || (c.Username == "alice" && c.Password == "secret") {
-		return nil
-	}
-	if c.Session != "" {
-		return sita.ErrUnauthorized
-	}
-	return sita.ErrLoginFailed
-})
 
 var teapot = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
 
@@ -66,20 +61,19 @@ func serve(h http.Handler, remote string, headers map[string]string) *httptest.R
 	return rec
 }
 
-func basic(user, pw string) map[string]string {
-	r := http.Request{Header: http.Header{}}
-	r.SetBasicAuth(user, pw)
-	return map[string]string{"Authorization": r.Header.Get("Authorization")}
+func bearer(token string) map[string]string {
+	return map[string]string{"Authorization": "Bearer " + token}
 }
 
 func TestGuard(t *testing.T) {
-	h := (&auth.Guard{Verifier: verifier, Logger: discard}).Wrap(teapot)
+	h := (&auth.Guard{Verifier: &fakeVerifier{}, Logger: discard}).Wrap(teapot)
 
 	for header, want := range map[string]int{
-		"":             http.StatusUnauthorized,
-		"Bearer bad":   http.StatusUnauthorized,
-		"Bearer good":  http.StatusTeapot,
-		"Basic broken": http.StatusUnauthorized,
+		"":            http.StatusUnauthorized,
+		"Bearer bad":  http.StatusUnauthorized,
+		"Bearer good": http.StatusTeapot,
+		"Basic YTpi":  http.StatusUnauthorized,
+		"Bearer":      http.StatusUnauthorized,
 	} {
 		rec := serve(h, "192.0.2.1:1234", map[string]string{"Authorization": header})
 		if rec.Code != want {
@@ -91,43 +85,52 @@ func TestGuard(t *testing.T) {
 	}
 }
 
-func TestGuardBlocksIPAfterFailures(t *testing.T) {
-	h := (&auth.Guard{Verifier: verifier, Limiter: auth.NewLimiter(3, time.Hour), Logger: discard}).Wrap(teapot)
+func TestGuardCachesAcceptedTokens(t *testing.T) {
+	v := &fakeVerifier{}
+	h := (&auth.Guard{Verifier: v, VerifyCacheTTL: time.Minute, Logger: discard}).Wrap(teapot)
 
-	for i, user := range []string{"bob", "carol", "dave"} {
-		if rec := serve(h, "192.0.2.1:1", basic(user, "guess")); rec.Code != http.StatusUnauthorized {
+	for range 3 {
+		if rec := serve(h, "192.0.2.1:1", bearer("good")); rec.Code != http.StatusTeapot {
+			t.Fatalf("status %d", rec.Code)
+		}
+	}
+	for range 2 {
+		serve(h, "192.0.2.1:1", bearer("bad"))
+	}
+	// One check for the good token; rejected tokens are never cached.
+	if got := v.calls.Load(); got != 3 {
+		t.Fatalf("verifier calls = %d, want 3", got)
+	}
+}
+
+func TestGuardBlocksIPAfterFailures(t *testing.T) {
+	h := (&auth.Guard{Verifier: &fakeVerifier{}, Limiter: auth.NewLimiter(3, time.Hour), Logger: discard}).Wrap(teapot)
+
+	for i := range 3 {
+		if rec := serve(h, "192.0.2.1:1", bearer("guess")); rec.Code != http.StatusUnauthorized {
 			t.Fatalf("attempt %d: status %d", i, rec.Code)
 		}
 	}
-	// The IP is blocked now, even for valid credentials.
-	rec := serve(h, "192.0.2.1:1", basic("alice", "secret"))
+	// The IP is blocked now, even for a valid token.
+	rec := serve(h, "192.0.2.1:1", bearer("good"))
 	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
 		t.Fatalf("blocked IP: status %d, Retry-After %q", rec.Code, rec.Header().Get("Retry-After"))
 	}
 	// Other clients are not affected.
-	if rec := serve(h, "198.51.100.7:1", basic("alice", "secret")); rec.Code != http.StatusTeapot {
+	if rec := serve(h, "198.51.100.7:1", bearer("good")); rec.Code != http.StatusTeapot {
 		t.Fatalf("other IP: status %d", rec.Code)
 	}
-	// Missing credentials are not counted.
-	h2 := (&auth.Guard{Verifier: verifier, Limiter: auth.NewLimiter(1, time.Hour), Logger: discard}).Wrap(teapot)
+
+	// Missing tokens are not counted.
+	h2 := (&auth.Guard{Verifier: &fakeVerifier{}, Limiter: auth.NewLimiter(1, time.Hour), Logger: discard}).Wrap(teapot)
 	serve(h2, "192.0.2.9:1", nil)
-	if rec := serve(h2, "192.0.2.9:1", basic("alice", "secret")); rec.Code != http.StatusTeapot {
-		t.Fatalf("missing credentials were counted: status %d", rec.Code)
-	}
-}
-
-func TestGuardBlocksUsernameAcrossIPs(t *testing.T) {
-	h := (&auth.Guard{Verifier: verifier, Limiter: auth.NewLimiter(2, time.Hour), Logger: discard}).Wrap(teapot)
-
-	serve(h, "192.0.2.1:1", basic("alice", "wrong1"))
-	serve(h, "192.0.2.2:1", basic("Alice", "wrong2"))
-	if rec := serve(h, "192.0.2.3:1", basic("alice", "secret")); rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("username not blocked: status %d", rec.Code)
+	if rec := serve(h2, "192.0.2.9:1", bearer("good")); rec.Code != http.StatusTeapot {
+		t.Fatalf("missing token was counted: status %d", rec.Code)
 	}
 }
 
 func TestGuardUsesProxyHeader(t *testing.T) {
-	h := (&auth.Guard{Verifier: verifier, Limiter: auth.NewLimiter(1, time.Hour), ClientIPHeader: "X-Forwarded-For", Logger: discard}).Wrap(teapot)
+	h := (&auth.Guard{Verifier: &fakeVerifier{}, Limiter: auth.NewLimiter(1, time.Hour), ClientIPHeader: "X-Forwarded-For", Logger: discard}).Wrap(teapot)
 
 	// Both requests come through the same proxy but from different clients.
 	serve(h, "10.0.0.1:1", map[string]string{"X-Forwarded-For": "spoofed, 192.0.2.1", "Authorization": "Bearer bad"})

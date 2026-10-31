@@ -8,7 +8,7 @@ import (
 // sweepInterval is how often expired limiter entries are dropped.
 const sweepInterval = time.Minute
 
-// Limiter blocks a key (client IP or username) after too many failed logins.
+// Limiter blocks a key, such as a client IP, after too many failed authentications.
 // Failures are counted in a fixed window that starts with the first failure;
 // once the maximum is reached the key is blocked until the window ends.
 type Limiter struct {
@@ -26,7 +26,7 @@ type failures struct {
 	first time.Time
 }
 
-// NewLimiter allows maxFailures failed logins per key within window.
+// NewLimiter allows maxFailures failures per key within window.
 func NewLimiter(maxFailures int, window time.Duration) *Limiter {
 	return &Limiter{max: maxFailures, window: window, now: time.Now, entries: map[string]*failures{}}
 }
@@ -50,7 +50,7 @@ func (l *Limiter) Blocked(key string) (bool, time.Duration) {
 	return true, f.first.Add(l.window).Sub(now)
 }
 
-// Fail records a failed login for key.
+// Fail records a failure for key.
 func (l *Limiter) Fail(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

@@ -1,12 +1,8 @@
 // Package auth extracts sita credentials from HTTP requests.
 //
-// HTTP clients authenticate with their own sita account, either
+// HTTP clients authenticate with their personal MCP API token from simpletactics.de:
 //
-//	Authorization: Basic base64(username:password)
-//
-// or with an existing website session
-//
-//	Authorization: Bearer <sita session id>
+//	Authorization: Bearer <token>
 package auth
 
 import (
@@ -18,105 +14,119 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/SimpletacticsGaming/sita-mcp/internal/sita"
 )
 
-// FromHeader returns the credentials in the Authorization header of h.
+// FromHeader returns the token in the Authorization header of h.
 func FromHeader(h http.Header) (sita.Credentials, bool) {
-	value := h.Get("Authorization")
-	scheme, param, ok := strings.Cut(value, " ")
-	if !ok {
+	scheme, token, ok := strings.Cut(h.Get("Authorization"), " ")
+	token = strings.TrimSpace(token)
+	if !ok || !strings.EqualFold(scheme, "Bearer") || token == "" {
 		return sita.Credentials{}, false
 	}
-	param = strings.TrimSpace(param)
-
-	switch strings.ToLower(scheme) {
-	case "basic":
-		r := http.Request{Header: http.Header{"Authorization": {"Basic " + param}}}
-		user, pw, ok := r.BasicAuth()
-		if !ok || user == "" || pw == "" {
-			return sita.Credentials{}, false
-		}
-		return sita.Credentials{Username: user, Password: pw}, true
-	case "bearer":
-		if param == "" {
-			return sita.Credentials{}, false
-		}
-		return sita.Credentials{Session: param}, true
-	}
-	return sita.Credentials{}, false
+	return sita.Credentials{Token: token}, true
 }
 
 // Verifier checks credentials against the backend.
 type Verifier interface {
-	Verify(ctx context.Context, creds sita.Credentials) error
+	Verify(ctx context.Context, creds sita.Credentials) (sita.TokenInfo, error)
 }
 
-// Guard protects the MCP endpoint: it rejects requests without valid sita
-// credentials with 401 and throttles clients that keep failing with 429.
+// Guard protects the MCP endpoint: it rejects requests without a valid token
+// with 401 and throttles clients that keep sending invalid tokens with 429.
 type Guard struct {
 	Verifier Verifier
-	// Limiter counts failed logins per client IP and per username. Nil disables throttling.
+	// Limiter counts rejected tokens per client IP. Nil disables throttling.
 	Limiter *Limiter
 	// ClientIPHeader names a header set by a trusted reverse proxy that carries the
 	// client IP, e.g. X-Forwarded-For or X-Real-IP. Empty uses the connection address.
 	ClientIPHeader string
+	// VerifyCacheTTL is how long an accepted token is trusted without asking the
+	// backend again. It bounds how long a revoked token keeps working. Zero disables the cache.
+	VerifyCacheTTL time.Duration
 	Logger         *slog.Logger
+
+	mu       sync.Mutex
+	verified map[string]time.Time // token key → valid until
+	now      func() time.Time
 }
 
 // Wrap returns next guarded by g.
 func (g *Guard) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		creds, ok := FromHeader(r.Header)
 		ip := clientIP(r, g.ClientIPHeader)
-		keys := []string{"ip:" + ip}
-		if creds.Username != "" {
-			keys = append(keys, "user:"+strings.ToLower(creds.Username))
-		}
-
 		if g.Limiter != nil {
-			for _, k := range keys {
-				if blocked, retry := g.Limiter.Blocked(k); blocked {
-					w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(retry.Seconds()))))
-					http.Error(w, "too many failed logins, try again later", http.StatusTooManyRequests)
-					return
-				}
+			if blocked, retry := g.Limiter.Blocked(ip); blocked {
+				w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(retry.Seconds()))))
+				http.Error(w, "too many invalid tokens, try again later", http.StatusTooManyRequests)
+				return
 			}
 		}
 
+		creds, ok := FromHeader(r.Header)
 		if !ok {
 			// Not a guess, so not counted: a misconfigured client must not lock out a shared IP.
-			unauthorized(w, "missing credentials: send 'Authorization: Basic <user:password>' or 'Authorization: Bearer <sita session>'")
+			unauthorized(w, "missing token: send 'Authorization: Bearer <MCP token>'; tokens are created on simpletactics.de")
 			return
 		}
-		if err := g.Verifier.Verify(r.Context(), creds); err != nil {
-			if errors.Is(err, sita.ErrLoginFailed) || errors.Is(err, sita.ErrUnauthorized) {
-				g.fail(keys, ip, creds)
+		if !g.cached(creds) {
+			info, err := g.Verifier.Verify(r.Context(), creds)
+			if errors.Is(err, sita.ErrUnauthorized) {
+				g.Logger.Warn("rejected token", "client_ip", ip)
+				if g.Limiter != nil {
+					g.Limiter.Fail(ip)
+				}
 				unauthorized(w, err.Error())
 				return
 			}
-			g.Logger.Error("verifying credentials failed", "error", err)
-			http.Error(w, "sita-backend not reachable", http.StatusBadGateway)
-			return
-		}
-		// Only the username is reset: resetting the IP would let a client with one
-		// valid account interleave unlimited guesses for other accounts.
-		if g.Limiter != nil && creds.Username != "" {
-			g.Limiter.Reset("user:" + strings.ToLower(creds.Username))
+			if err != nil {
+				g.Logger.Error("verifying token failed", "error", err)
+				http.Error(w, "sita-backend not reachable", http.StatusBadGateway)
+				return
+			}
+			g.Logger.Debug("accepted token", "client_ip", ip, "username", info.Username, "token_name", info.Name)
+			g.remember(creds)
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-func (g *Guard) fail(keys []string, ip string, creds sita.Credentials) {
-	g.Logger.Warn("failed login", "client_ip", ip, "username", creds.Username)
-	if g.Limiter == nil {
+func (g *Guard) cached(creds sita.Credentials) bool {
+	if g.VerifyCacheTTL <= 0 {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	until, ok := g.verified[creds.Key()]
+	return ok && g.clock().Before(until)
+}
+
+func (g *Guard) remember(creds sita.Credentials) {
+	if g.VerifyCacheTTL <= 0 {
 		return
 	}
-	for _, k := range keys {
-		g.Limiter.Fail(k)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := g.clock()
+	if g.verified == nil {
+		g.verified = map[string]time.Time{}
 	}
+	for k, until := range g.verified {
+		if !now.Before(until) {
+			delete(g.verified, k)
+		}
+	}
+	g.verified[creds.Key()] = now.Add(g.VerifyCacheTTL)
+}
+
+func (g *Guard) clock() time.Time {
+	if g.now != nil {
+		return g.now()
+	}
+	return time.Now()
 }
 
 // clientIP returns the client address of r. With a header from a trusted proxy,
@@ -136,6 +146,6 @@ func clientIP(r *http.Request, header string) string {
 }
 
 func unauthorized(w http.ResponseWriter, msg string) {
-	w.Header().Set("WWW-Authenticate", `Basic realm="sita-mcp", charset="UTF-8"`)
+	w.Header().Set("WWW-Authenticate", `Bearer realm="sita-mcp"`)
 	http.Error(w, msg, http.StatusUnauthorized)
 }

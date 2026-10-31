@@ -2,7 +2,9 @@
 
 MCP-Server, der LLM-Clients wie Claude Code oder Claude Desktop **Lesezugriff auf das Simpletactics-Wiki** gibt.
 
-Der Server spricht mit der öffentlichen API von **sita-backend** (`/api/wiki/...`) und meldet sich dort **mit dem sita-Account des jeweiligen Nutzers** an. Es gelten also dieselben Wiki-Rechte (`WIKI_READ`) wie auf der Webseite: Jeder sieht nur, was er auch im Browser sehen darf.
+Der Server spricht mit der öffentlichen API von **sita-backend** (`/api/wiki/...`). Er authentifiziert sich mit einem **persönlichen MCP-Token**, das jeder Nutzer auf simpletactics.de selbst erzeugt und jederzeit widerrufen kann. Es gelten dieselben Wiki-Rechte (`WIKI_READ`) wie auf der Webseite: Jeder sieht nur, was er auch im Browser sehen darf. Sein Passwort muss niemand im MCP hinterlegen.
+
+> **Stand:** Backend und Frontend unterstützen die MCP-Tokens noch nicht. Den Vertrag, den der MCP erwartet, beschreibt [docs/api-tokens.md](docs/api-tokens.md).
 
 ## Tools
 
@@ -15,30 +17,37 @@ Der Server spricht mit der öffentlichen API von **sita-backend** (`/api/wiki/..
 
 Alle Tools sind read-only. Schreib-Tools sind für später geplant.
 
-Das Backend hat keine Suche. Der Server durchläuft deshalb beim ersten `wiki_search` pro Nutzer den Wiki-Baum und hält einen Index im Speicher, standardmäßig 10 Minuten lang (`WIKI_INDEX_TTL`).
+Das Backend hat keine Suche. Der Server durchläuft deshalb beim ersten `wiki_search` pro Token den Wiki-Baum und hält einen Index im Speicher, standardmäßig 10 Minuten lang (`WIKI_INDEX_TTL`).
+
+## MCP-Token
+
+1. Auf simpletactics.de im Profil ein MCP-Token erzeugen. Es wird nur einmal angezeigt und beginnt mit `sita_mcp_`.
+2. Das Token im MCP-Client hinterlegen (Beispiele unten).
+3. Wird es nicht mehr gebraucht oder ist es in falsche Hände geraten: im Profil widerrufen. Ab dann lehnt das Backend es sofort ab.
+
+Das Token steht im Klartext in der Konfiguration deines MCP-Clients. Anders als ein Passwort erlaubt es aber nur Lesen, gilt nur für den MCP und lässt sich einzeln widerrufen, ohne dass du dein Passwort ändern musst.
 
 ## Betriebsarten
 
 Dasselbe Docker-Image kann beides:
 
-- **`stdio` (Standard):** Claude startet den Container selbst (`docker run -i …`) und redet über stdin/stdout mit ihm. Die Zugangsdaten kommen aus Umgebungsvariablen.
-- **`http`:** Der Container läuft dauerhaft, z. B. im Swarm, und stellt Streamable HTTP unter `/mcp` bereit. Jeder Client schickt seine eigenen sita-Zugangsdaten im `Authorization`-Header mit:
-  - `Authorization: Basic base64(benutzer:passwort)`, oder
-  - `Authorization: Bearer <sita-session-id>`.
+- **`stdio` (Standard):** Claude startet den Container selbst (`docker run -i …`) und redet über stdin/stdout mit ihm. Das Token kommt aus `SITA_TOKEN`.
+- **`http`:** Der Container läuft dauerhaft, z. B. im Swarm, und stellt Streamable HTTP unter `/mcp` bereit. Jeder Client schickt sein eigenes Token mit: `Authorization: Bearer <token>`.
 
-  Ohne gültige Zugangsdaten antwortet der Server mit `401`. TLS muss der Reverse Proxy übernehmen, weil sonst Passwörter im Klartext übertragen werden.
+  Ohne gültiges Token antwortet der Server mit `401`. Tokens, die das Backend akzeptiert hat, merkt er sich für `MCP_TOKEN_CACHE_TTL` (Standard 1 Minute), damit nicht jeder MCP-Request eine Prüfung im Backend auslöst. Die Wiki-Abfragen selbst schickt er immer mit dem Token ans Backend, ein widerrufenes Token liefert also sofort keine Daten mehr. TLS muss der Reverse Proxy übernehmen.
 
-  **Login-Limiter:** Nach `MCP_LOGIN_MAX_FAILURES` fehlgeschlagenen Logins (Standard 5) innerhalb von `MCP_LOGIN_BLOCK_WINDOW` (Standard 15 Minuten) antwortet der Server mit `429` und `Retry-After`. Gezählt wird pro Client-IP und pro Benutzername. Fehlende Zugangsdaten zählen nicht, die Website ist nicht betroffen.
+  **Limiter:** Nach `MCP_AUTH_MAX_FAILURES` abgelehnten Tokens (Standard 5) innerhalb von `MCP_AUTH_BLOCK_WINDOW` (Standard 15 Minuten) antwortet der Server einer Client-IP mit `429` und `Retry-After`. Requests ganz ohne Token zählen nicht.
 
   Hinter einem Reverse Proxy muss `MCP_CLIENT_IP_HEADER` gesetzt sein, z. B. `X-Forwarded-For`. Sonst teilen sich alle Clients die IP des Proxys und blockieren sich gegenseitig. Den Header nur setzen, wenn der Proxy ihn auch selbst schreibt, sonst können Clients ihre IP fälschen.
 
 ### Lokal mit Claude Code (stdio)
 
 ```bash
-claude mcp add sita \
-  -e SITA_USERNAME=dein-name -e SITA_PASSWORD=dein-passwort \
-  -- docker run -i --rm -e SITA_USERNAME -e SITA_PASSWORD registry.simpletactics.de/sita-mcp:<version>
+claude mcp add sita -e SITA_TOKEN=sita_mcp_… \
+  -- docker run -i --rm -e SITA_TOKEN registry.simpletactics.de/sita-mcp:<version>
 ```
+
+Nicht mit `--scope project` anlegen: Dann landet das Token in `.mcp.json` im Projektordner und schnell im Git-Repo.
 
 ### Lokal mit Claude Desktop (stdio)
 
@@ -49,9 +58,8 @@ claude mcp add sita \
   "mcpServers": {
     "sita": {
       "command": "docker",
-      "args": ["run", "-i", "--rm", "-e", "SITA_USERNAME", "-e", "SITA_PASSWORD",
-               "registry.simpletactics.de/sita-mcp:<version>"],
-      "env": { "SITA_USERNAME": "dein-name", "SITA_PASSWORD": "dein-passwort" }
+      "args": ["run", "-i", "--rm", "-e", "SITA_TOKEN", "registry.simpletactics.de/sita-mcp:<version>"],
+      "env": { "SITA_TOKEN": "sita_mcp_…" }
     }
   }
 }
@@ -60,8 +68,7 @@ claude mcp add sita \
 ### Remote (HTTP)
 
 ```bash
-claude mcp add --transport http sita https://<host>/mcp \
-  --header "Authorization: Basic $(printf 'dein-name:dein-passwort' | base64)"
+claude mcp add --transport http sita https://<host>/mcp --header "Authorization: Bearer sita_mcp_…"
 ```
 
 ## Konfiguration
@@ -69,15 +76,14 @@ claude mcp add --transport http sita https://<host>/mcp \
 | Variable | Standard | Bedeutung |
 |---|---|---|
 | `MCP_TRANSPORT` | `stdio` | `stdio` oder `http` |
+| `SITA_TOKEN` | – | MCP-Token für den stdio-Modus (Pflicht) |
 | `MCP_HTTP_ADDR` | `:8080` | Listen-Adresse im HTTP-Modus |
-| `MCP_LOGIN_MAX_FAILURES` | `5` | Fehlversuche pro IP bzw. Benutzer bis zur Sperre (HTTP), `0` schaltet den Limiter ab |
-| `MCP_LOGIN_BLOCK_WINDOW` | `15m` | Zeitfenster für die Fehlversuche und Dauer der Sperre |
+| `MCP_TOKEN_CACHE_TTL` | `1m` | Wie lange ein akzeptiertes Token ohne erneute Prüfung durchgelassen wird (HTTP), `0` prüft jeden Request |
+| `MCP_AUTH_MAX_FAILURES` | `5` | Abgelehnte Tokens pro IP bis zur Sperre (HTTP), `0` schaltet den Limiter ab |
+| `MCP_AUTH_BLOCK_WINDOW` | `15m` | Zeitfenster für die Fehlversuche und Dauer der Sperre |
 | `MCP_CLIENT_IP_HEADER` | – | Header mit der Client-IP vom Reverse Proxy, z. B. `X-Forwarded-For` (letzter Eintrag zählt) |
 | `SITA_BACKEND_URL` | `https://simpletactics.de/backend` | Basis-URL von sita-backend; im Swarm z. B. die interne Service-URL |
 | `SITA_WIKI_PUBLIC_URL` | `https://simpletactics.de/wiki/?ar=` | Präfix für öffentliche Links, die id wird angehängt |
-| `SITA_AUTH_HEADER` | `authentication` | Header, in dem das Backend die Session erwartet |
-| `SITA_USERNAME`, `SITA_PASSWORD` | – | Login für den stdio-Modus |
-| `SITA_SESSION` | – | Alternativ zum Login: eine bestehende Session-id (stdio) |
 | `WIKI_INDEX_TTL` | `10m` | Wie lange ein Suchindex wiederverwendet wird |
 | `WIKI_INDEX_MAX_NODES` | `2000` | Obergrenze für die Knoten pro Durchlauf |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`; Logs gehen als JSON nach stderr |
@@ -93,15 +99,15 @@ docker compose up --build   # HTTP-Modus auf http://localhost:8080/mcp
 Ausprobieren mit dem MCP Inspector:
 
 ```bash
-npx @modelcontextprotocol/inspector docker run -i --rm -e SITA_USERNAME -e SITA_PASSWORD sita-mcp:local
+npx @modelcontextprotocol/inspector docker run -i --rm -e SITA_TOKEN sita-mcp:local
 ```
 
 Aufbau:
 
 - `cmd/sita-mcp`: Einstiegspunkt, wählt stdio oder HTTP
-- `internal/sita`: Client für sita-backend (Login, Session-Cache, Wiki-Endpunkte), dazu `sitatest`, ein Fake-Backend für Tests
+- `internal/sita`: Client für sita-backend (Token-Auth, Wiki-Endpunkte), dazu `sitatest`, ein Fake-Backend für Tests
 - `internal/wiki`: Seiten, Breadcrumbs, Baum, Suchindex, HTML→Markdown
-- `internal/auth`: `Authorization`-Header auswerten und prüfen (HTTP-Modus)
+- `internal/auth`: Token aus dem `Authorization`-Header prüfen, Limiter (HTTP-Modus)
 - `internal/mcpserver`: Tool-Definitionen
 
 ## Versionierung und Releases

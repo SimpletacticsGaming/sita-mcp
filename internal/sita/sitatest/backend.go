@@ -3,7 +3,6 @@ package sitatest
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -28,18 +27,21 @@ type Node struct {
 	Closed      bool
 }
 
+// Tokens of the seeded users.
+const (
+	AliceToken = "sita_mcp_alice_token"
+	BobToken   = "sita_mcp_bob_token"
+)
+
 // Backend is a fake sita-backend. Its fields may be changed by tests before requests are made.
 type Backend struct {
 	*httptest.Server
 
 	mu       sync.Mutex
 	Nodes    map[int]*Node
-	Users    map[string]string       // username → password
+	Tokens   map[string]string       // API token → username
 	Hidden   map[string]map[int]bool // username → node ids the user may not read
-	sessions map[string]string       // session id → username
-	logins   int
 	requests int
-	nextID   int
 }
 
 // New starts a fake backend seeded with a small wiki:
@@ -52,7 +54,7 @@ type Backend struct {
 //	    ├── 5 Geheime Kampagne (entry, hidden for bob)
 //	    └── 6 Alte Umfrage (closed poll)
 //
-// Users: alice/secret may read everything, bob/hunter2 may not read nodes 2 and 5.
+// Users: alice (AliceToken) may read everything, bob (BobToken) may not read nodes 2 and 5.
 func New(t testing.TB) *Backend {
 	b := &Backend{
 		Nodes: map[int]*Node{
@@ -69,20 +71,12 @@ func New(t testing.TB) *Backend {
 			5: {ID: 5, Type: sita.NodeEntry, Title: "Geheime Kampagne", Content: "<p>Der Drache lebt im Norden.</p>"},
 			6: {ID: 6, Type: sita.NodePoll, Title: "Alte Umfrage", Closed: true},
 		},
-		Users:    map[string]string{"alice": "secret", "bob": "hunter2"},
-		Hidden:   map[string]map[int]bool{"bob": {2: true, 5: true}},
-		sessions: map[string]string{},
+		Tokens: map[string]string{AliceToken: "alice", BobToken: "bob"},
+		Hidden: map[string]map[int]bool{"bob": {2: true, 5: true}},
 	}
 	b.Server = httptest.NewServer(http.HandlerFunc(b.serve))
 	t.Cleanup(b.Close)
 	return b
-}
-
-// Logins returns how many successful logins happened.
-func (b *Backend) Logins() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.logins
 }
 
 // Requests returns how many requests were served.
@@ -92,25 +86,11 @@ func (b *Backend) Requests() int {
 	return b.requests
 }
 
-// ExpireSessions invalidates all sessions, as if they timed out.
-func (b *Backend) ExpireSessions() {
+// Revoke invalidates token, as if the user deleted it on the website.
+func (b *Backend) Revoke(token string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.sessions = map[string]string{}
-}
-
-// Session logs user in directly and returns the session id.
-func (b *Backend) Session(user string) string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.newSession(user)
-}
-
-func (b *Backend) newSession(user string) string {
-	b.nextID++
-	id := fmt.Sprintf("00000000-0000-0000-0000-%012d", b.nextID)
-	b.sessions[id] = user
-	return id
+	delete(b.Tokens, token)
 }
 
 func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
@@ -118,29 +98,14 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	defer b.mu.Unlock()
 	b.requests++
 
-	switch {
-	case r.Method == http.MethodPost && r.URL.Path == "/login":
-		var req struct{ Username, Password string }
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		if pw, ok := b.Users[req.Username]; !ok || pw != req.Password {
-			w.WriteHeader(http.StatusForbidden)
-			return
-		}
-		b.logins++
-		writeJSON(w, map[string]any{"successful": true, "sessionId": b.newSession(req.Username), "setPassword": false})
-		return
-	case r.Method == http.MethodGet && r.URL.Path == "/loggedIn":
-		_, ok := b.sessions[r.Header.Get("authentication")]
-		writeJSON(w, ok)
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	user, known := b.Tokens[token]
+	if !ok || !known {
+		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-
-	user, ok := b.sessions[r.Header.Get("authentication")]
-	if !ok {
-		w.WriteHeader(http.StatusUnauthorized)
+	if r.Method == http.MethodGet && r.URL.Path == "/api/tokens/current" {
+		writeJSON(w, sita.TokenInfo{Name: "test", Username: user})
 		return
 	}
 

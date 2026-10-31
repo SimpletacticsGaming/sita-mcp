@@ -17,7 +17,7 @@ import (
 func connect(t *testing.T, creds sita.Credentials) *mcp.ClientSession {
 	t.Helper()
 	b := sitatest.New(t)
-	svc := wiki.NewService(sita.NewClient(b.URL, "authentication", b.Client()), wiki.Options{
+	svc := wiki.NewService(sita.NewClient(b.URL, b.Client()), wiki.Options{
 		PublicURL: "https://example.test/wiki/?ar=", IndexTTL: time.Minute, MaxNodes: 100,
 	})
 	server := mcpserver.New(svc, func(*mcp.CallToolRequest) (sita.Credentials, error) { return creds, nil }, "test")
@@ -55,7 +55,7 @@ func textOf(res *mcp.CallToolResult) string {
 }
 
 func TestToolsAreListedAsReadOnly(t *testing.T) {
-	s := connect(t, sita.Credentials{Username: "alice", Password: "secret"})
+	s := connect(t, sita.Credentials{Token: sitatest.AliceToken})
 	res, err := s.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +75,7 @@ func TestToolsAreListedAsReadOnly(t *testing.T) {
 }
 
 func TestToolCalls(t *testing.T) {
-	s := connect(t, sita.Credentials{Username: "alice", Password: "secret"})
+	s := connect(t, sita.Credentials{Token: sitatest.AliceToken})
 
 	page := call(t, s, "wiki_get_page", map[string]any{"id": 3})
 	if page.IsError || !strings.Contains(textOf(page), "# Kampfregeln") || !strings.Contains(textOf(page), "**W20**") {
@@ -107,7 +107,7 @@ func TestToolCalls(t *testing.T) {
 }
 
 func TestToolErrors(t *testing.T) {
-	bob := connect(t, sita.Credentials{Username: "bob", Password: "hunter2"})
+	bob := connect(t, sita.Credentials{Token: sitatest.BobToken})
 	res := call(t, bob, "wiki_get_page", map[string]any{"id": 5})
 	if !res.IsError || !strings.Contains(textOf(res), "permission") {
 		t.Fatalf("forbidden page: %+v %s", res, textOf(res))
@@ -117,9 +117,9 @@ func TestToolErrors(t *testing.T) {
 		t.Fatalf("missing page: %s", textOf(res))
 	}
 
-	wrong := connect(t, sita.Credentials{Username: "alice", Password: "wrong"})
-	res = call(t, wrong, "wiki_search", map[string]any{"query": "x"})
-	if !res.IsError || !strings.Contains(textOf(res), "login failed") {
-		t.Fatalf("wrong password: %s", textOf(res))
+	revoked := connect(t, sita.Credentials{Token: "revoked"})
+	res = call(t, revoked, "wiki_search", map[string]any{"query": "x"})
+	if !res.IsError || !strings.Contains(textOf(res), "API token") {
+		t.Fatalf("revoked token: %s", textOf(res))
 	}
 }

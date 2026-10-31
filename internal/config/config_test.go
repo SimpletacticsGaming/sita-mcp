@@ -12,13 +12,13 @@ func env(m map[string]string) func(string) string {
 }
 
 func TestLoadDefaults(t *testing.T) {
-	cfg, err := config.Load(env(map[string]string{"SITA_USERNAME": "alice", "SITA_PASSWORD": "secret"}))
+	cfg, err := config.Load(env(map[string]string{"SITA_TOKEN": "sita_mcp_x"}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Transport != config.TransportStdio || cfg.BackendURL != "https://simpletactics.de/backend" ||
-		cfg.AuthHeader != "authentication" || cfg.IndexTTL != 10*time.Minute || cfg.IndexMaxNodes != 2000 ||
-		cfg.LoginMaxFailures != 5 || cfg.LoginBlockWindow != 15*time.Minute {
+		cfg.Token != "sita_mcp_x" || cfg.IndexTTL != 10*time.Minute || cfg.IndexMaxNodes != 2000 ||
+		cfg.AuthMaxFailures != 5 || cfg.AuthBlockWindow != 15*time.Minute || cfg.TokenCacheTTL != time.Minute {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -35,13 +35,14 @@ func TestLoadHTTPNeedsNoCredentials(t *testing.T) {
 
 func TestLoadErrors(t *testing.T) {
 	for name, e := range map[string]map[string]string{
-		"stdio without credentials": {},
-		"unknown transport":         {"MCP_TRANSPORT": "sse", "SITA_SESSION": "x"},
-		"bad ttl":                   {"WIKI_INDEX_TTL": "soon", "SITA_SESSION": "x"},
-		"bad max nodes":             {"WIKI_INDEX_MAX_NODES": "0", "SITA_SESSION": "x"},
-		"bad log level":             {"LOG_LEVEL": "loud", "SITA_SESSION": "x"},
-		"bad login window":          {"MCP_LOGIN_BLOCK_WINDOW": "1x", "SITA_SESSION": "x"},
-		"negative max failures":     {"MCP_LOGIN_MAX_FAILURES": "-1", "SITA_SESSION": "x"},
+		"stdio without token":   {},
+		"unknown transport":     {"MCP_TRANSPORT": "sse", "SITA_TOKEN": "x"},
+		"bad ttl":               {"WIKI_INDEX_TTL": "soon", "SITA_TOKEN": "x"},
+		"bad max nodes":         {"WIKI_INDEX_MAX_NODES": "0", "SITA_TOKEN": "x"},
+		"bad log level":         {"LOG_LEVEL": "loud", "SITA_TOKEN": "x"},
+		"bad block window":      {"MCP_AUTH_BLOCK_WINDOW": "1x", "SITA_TOKEN": "x"},
+		"negative max failures": {"MCP_AUTH_MAX_FAILURES": "-1", "SITA_TOKEN": "x"},
+		"bad token cache ttl":   {"MCP_TOKEN_CACHE_TTL": "1x", "SITA_TOKEN": "x"},
 	} {
 		if _, err := config.Load(env(e)); err == nil {
 			t.Errorf("%s: expected error", name)

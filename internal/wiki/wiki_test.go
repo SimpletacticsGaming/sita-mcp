@@ -12,14 +12,14 @@ import (
 )
 
 var (
-	alice = sita.Credentials{Username: "alice", Password: "secret"}
-	bob   = sita.Credentials{Username: "bob", Password: "hunter2"}
+	alice = sita.Credentials{Token: sitatest.AliceToken}
+	bob   = sita.Credentials{Token: sitatest.BobToken}
 )
 
 func newService(t *testing.T) (*wiki.Service, *sitatest.Backend) {
 	t.Helper()
 	b := sitatest.New(t)
-	client := sita.NewClient(b.URL, "authentication", b.Client())
+	client := sita.NewClient(b.URL, b.Client())
 	return wiki.NewService(client, wiki.Options{PublicURL: "https://example.test/wiki/?ar=", IndexTTL: time.Minute, MaxNodes: 100}), b
 }
 
