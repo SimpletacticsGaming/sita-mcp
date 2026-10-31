@@ -18,19 +18,23 @@ Dieses Dokument beschreibt, was sita-mcp vom Backend erwartet und was dafür in 
 
 ## Datenmodell (Vorschlag, Flyway-Migration in sita-backend)
 
+Im Stil von `V008__create_sessions.sql`: Tabellenname im Plural, `timestamp` ohne Zeitzone.
+
 ```sql
-CREATE TABLE mcp_token (
-    id           SERIAL PRIMARY KEY,
-    user_id      INTEGER      NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    name         VARCHAR(100) NOT NULL,            -- vom Nutzer vergeben, z. B. "Laptop Claude Code"
-    token_hash   CHAR(64)     NOT NULL UNIQUE,     -- hex(SHA-256(token))
-    scopes       TEXT[]       NOT NULL DEFAULT '{wiki:read}',
-    created_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    last_used_at TIMESTAMPTZ,
-    expires_at   TIMESTAMPTZ,                      -- NULL = läuft nie ab
-    revoked_at   TIMESTAMPTZ                       -- gesetzt statt Löschen, für die Nachvollziehbarkeit
+CREATE TABLE IF NOT EXISTS mcp_tokens
+(
+    id           serial PRIMARY KEY,
+    user_id      integer                NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+    name         character varying(100) NOT NULL,        -- vom Nutzer vergeben, z. B. "Laptop Claude Code"
+    token_hash   character(64)          NOT NULL UNIQUE, -- hex(SHA-256(token))
+    scopes       text[]                 NOT NULL DEFAULT '{wiki:read}',
+    created_at   timestamp              NOT NULL,
+    last_used_at timestamp,
+    expires_at   timestamp,                              -- NULL = läuft nie ab
+    revoked_at   timestamp                               -- gesetzt statt Löschen, für die Nachvollziehbarkeit
 );
-CREATE INDEX mcp_token_user_idx ON mcp_token (user_id);
+
+CREATE INDEX IF NOT EXISTS mcp_tokens_user_id_idx ON mcp_tokens USING btree (user_id);
 ```
 
 `scopes` ist für später gedacht: Kommen Schreib-Tools dazu, bekommen neue Tokens `wiki:write`, ohne dass die Tabelle umgebaut werden muss.
@@ -45,14 +49,18 @@ Authorization: Bearer sita_mcp_…
 
 Das Backend erweitert seine Request-Authentifizierung (heute `SessionAuthenticationFilter`, Header `authentication`):
 
-1. Steht im `Authorization`-Header `Bearer sita_mcp_…`, wird der Hash berechnet und in `mcp_token` gesucht.
-2. **Ungültig** (unbekannt, `revoked_at` gesetzt oder `expires_at` vorbei): **401**, nicht 403, damit der MCP „Token kaputt“ von „keine Rechte“ unterscheiden kann.
+1. Steht im `Authorization`-Header `Bearer sita_mcp_…`, wird der Hash berechnet und in `mcp_tokens` gesucht.
+2. **Ungültig** (unbekannt, `revoked_at` gesetzt, `expires_at` vorbei oder Besitzer nicht mehr `active`): Der Filter antwortet selbst mit **401** und `WWW-Authenticate: Bearer`.
+   - Lässt er den Request stattdessen anonym weiterlaufen, antwortet Spring Security mit 403. Dann könnte der MCP „Token kaputt“ nicht von „keine Rechte“ unterscheiden.
 3. **Gültig:**
-   - Der Principal ist der Benutzername des Besitzers, wie bei einer Session. Damit greift `WikiPermissionEvaluator` unverändert.
-   - Die globalen Authorities werden auf die Rechte beschränkt, die zum Scope passen. Für `wiki:read` ist das `WIKI_READ`, keine Admin-, Blog- oder sonstigen Rechte.
-   - Als Merkmal am Authentication-Objekt markieren, dass der Request per Token kam, z. B. eine eigene `McpTokenAuthentication`.
+   - Der Principal ist der Benutzername des Besitzers **als `String`**, wie bei einer Session. `WikiPermissionService` liest ihn per `principal as? String` aus. Damit greift die Rechteprüfung pro Knoten unverändert.
+   - Die Authorities werden auf die Rechte beschränkt, die zum Scope passen. Für `wiki:read` ist das `WIKI_READ`.
+     - Das wirkt nur auf `hasAuthority(…)`-Prüfungen.
+     - `WikiPermissionService.hasWikiPermission` lädt die Rollenrechte des Nutzers selbst aus der Datenbank und ignoriert die Authorities.
+     - **Die eigentliche Absicherung ist deshalb die Allowlist in Punkt 4.**
+   - Als Merkmal markieren, dass der Request per Token kam, z. B. eine eigene `McpTokenAuthentication` (von `AbstractAuthenticationToken` abgeleitet).
    - `last_used_at` aktualisieren, gedrosselt auf höchstens einmal pro Minute und Token.
-4. **Erlaubte Endpunkte per Token**, alle anderen beantwortet das Backend mit **403**:
+4. **Erlaubte Endpunkte per Token** (Methode und `servletPath` per Regex prüfen). Alle anderen beantwortet der Filter mit **403**:
 
    | Methode | Pfad |
    |---|---|
@@ -104,7 +112,7 @@ Regeln, die das Backend durchsetzen sollte:
 
 - Höchstens 10 aktive Tokens pro Nutzer; darüber `409`.
 - `name`: 1–100 Zeichen, Pflicht.
-- Wird ein Nutzer gelöscht, verschwinden seine Tokens (`ON DELETE CASCADE`). Beim Zurücksetzen des Passworts durch einen Admin sollten auch seine Tokens widerrufen werden.
+- Wird ein Nutzer gelöscht, verschwinden seine Tokens (`ON DELETE CASCADE`). Wird er deaktiviert (`users.active = false`), lehnt der Filter seine Tokens ab. Beim Zurücksetzen des Passworts durch einen Admin sollten auch seine Tokens widerrufen werden.
 - Optional: ein neues Recht `MCP_TOKEN_CREATE`, falls nicht jeder Nutzer Tokens anlegen darf.
 
 ## Frontend
@@ -125,4 +133,4 @@ Im Profil ein Bereich **„MCP-Tokens“**:
 
 ## Später: OAuth
 
-Remote-Connectors in Claude Desktop und claude.ai können keine eigenen Header setzen, sondern erwarten OAuth 2.1. Dann würde das Backend (oder ein vorgeschalteter Auth-Server) über einen OAuth-Flow Tokens nach demselben Modell ausstellen. `mcp_token` mit `scopes` und `expires_at` passt dazu.
+Remote-Connectors in Claude Desktop und claude.ai können keine eigenen Header setzen, sondern erwarten OAuth 2.1. Dann würde das Backend (oder ein vorgeschalteter Auth-Server) über einen OAuth-Flow Tokens nach demselben Modell ausstellen. `mcp_tokens` mit `scopes` und `expires_at` passt dazu.
