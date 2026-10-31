@@ -10,8 +10,8 @@ Plan zur Umsetzung von [api-tokens.md](api-tokens.md). Er beruht auf einer Analy
 |---|---|---|
 | Backend | 1 Migration, Token-Port/-Adapter/-Service, Login-Endpunkt, Verwaltungs-Controller, kleine Erweiterung der Session-Klassen | am besten nach #192 |
 | Frontend | Profil-Unterseite „MCP-Tokens“, Service, Menü-Button | Backend-Endpunkte |
-| sita-mcp | fertig umgestellt; noch `latest`-Tag, erstes Release, Repo veröffentlichen | Backend für einen echten Test |
-| Deployment | zunächst nichts: der MCP läuft beim Nutzer per stdio | – |
+| sita-mcp | fertig umgestellt; noch Repo veröffentlichen und erstes Release | Backend für einen echten Test |
+| Deployment | neuer Service `mcp` im Stack `sita` (deployment-repo) und eine Route `/mcp` im Reverse Proxy | erstes Release von sita-mcp |
 
 ## Entscheidungen
 
@@ -22,9 +22,9 @@ Plan zur Umsetzung von [api-tokens.md](api-tokens.md). Er beruht auf einer Analy
 | 3 | Wer darf Tokens anlegen? | **Entschieden:** jeder eingeloggte Nutzer, kein eigenes Recht |
 | 4 | Ablaufzeiten | **Entschieden:** immer 1 Jahr, nicht wählbar |
 | 5 | Widerruf bei Passwort-Reset | **Entschieden:** Setzt ein Admin das Passwort zurück, werden alle MCP-Tokens des Nutzers gelöscht (und damit ihre Sessions). Ändert der Nutzer es selbst, bleiben sie bestehen |
-| 6 | Basis-Branch, Migrationsnummer | Vorschlag: auf `main` nach dem Merge von #192, als `V017__create_mcp_tokens.sql` |
-| 7 | Wie kommen Nutzer an das Image? | Vorschlag: `promote.yml` taggt zusätzlich `latest`. Klären, ob `registry.simpletactics.de` ohne Login lesbar ist, sonst zusätzlich öffentlich auf GHCR veröffentlichen |
-| 8 | HTTP-Modus deployen? | Vorschlag: erstmal nicht, nur stdio |
+| 6 | Basis-Branch, Migrationsnummer | Keine Entscheidung nötig, nur beim Umsetzen beachten: auf `main`, nächste freie Flyway-Nummer. Nach #192 ist das `V017__create_mcp_tokens.sql`, sonst `V016` (dann muss #192 umnummerieren) |
+| 7 | Wie kommen Nutzer an das Image? | **Entschieden:** gar nicht. Die Registry ist nicht öffentlich, der MCP läuft zentral (siehe 8). Ein `latest`-Tag ist nicht nötig |
+| 8 | Wo läuft der MCP? | **Entschieden:** zentral per HTTP im Swarm. Nutzer tragen nur URL und Token ein und brauchen kein Docker |
 
 ## Backend (sita-backend)
 
@@ -138,8 +138,14 @@ src/app/elements/menuliste/menulist-right-main/menu-list-profile/menu-list-profi
 - **Liste** (Material-Tabelle): Name, erstellt, zuletzt genutzt („nie“), läuft ab. Je Zeile ein Button „Widerrufen“, der das vorhandene `DeleteModalComponent` öffnet, z. B. mit dem Text „Token ‚Laptop‘ widerrufen? MCP-Clients mit diesem Token verlieren sofort den Zugriff.“
 - **Neues Token:** nur ein Name (Pflicht, max. 100 Zeichen). Der Hinweis „Läuft nach einem Jahr ab“ steht daneben. Ist das Limit erreicht, wird der Button deaktiviert und erklärt warum.
 - **Nach dem Erstellen:** Ein Hinweiskasten zeigt das Token einmalig an, mit Kopieren-Button (`@angular/cdk/clipboard`). Dazu die Warnung „Wird nur jetzt angezeigt“ und darunter Snippets mit eingesetztem Token zum Kopieren:
-  - Claude Code: `claude mcp add sita -e SITA_TOKEN=<token> -- docker run -i --rm -e SITA_TOKEN registry.simpletactics.de/sita-mcp:latest`
-  - Claude Desktop: der JSON-Block aus dem README.
+  - Claude Code: `claude mcp add --transport http sita https://simpletactics.de/mcp --header "Authorization: Bearer <token>"`
+  - Claude Desktop: Remote-Connectors in Claude Desktop können keine eigenen Header setzen. Der Umweg ist die Brücke `mcp-remote`, die Node.js braucht und vor der Umsetzung noch getestet werden muss:
+    ```json
+    { "mcpServers": { "sita": {
+        "command": "npx",
+        "args": ["-y", "mcp-remote", "https://simpletactics.de/mcp", "--header", "Authorization:${AUTH_HEADER}"],
+        "env": { "AUTH_HEADER": "Bearer <token>" } } } }
+    ```
 - **Datenschutz:** Das Token bleibt nur im Komponenten-State. Es landet nicht im Router-State, nicht im `localStorage` und nicht in Logs.
 - **Fehler:** Der globale `errorInterceptor` springt bei jedem 403 auf die Zugriff-verweigert-Seite. Die Fehler dieser Seite (400, 409) zeigt die Seite selbst inline an.
 
@@ -155,7 +161,6 @@ src/app/elements/menuliste/menulist-right-main/menu-list-profile/menu-list-profi
 ## sita-mcp
 
 - Der Client ist bereits umgestellt: Login per `/login/mcp`, Session-Cache, nach `403` eine Prüfung per `/loggedIn` und bei Bedarf ein neuer Login.
-- `promote.yml`: zusätzlich `crane tag "$image:$rc_version" latest`.
 - Repo auf GitHub anlegen, öffentlich, und pushen. Prüfen, ob die Org-Secrets für öffentliche Repos freigegeben sind.
 - Erstes Release über `prepare-release`, `cut-rc` und `promote`.
 
@@ -164,6 +169,51 @@ src/app/elements/menuliste/menulist-right-main/menu-list-profile/menu-list-profi
 1. #192 mergen (wiki-service), damit die Migrationsnummer feststeht.
 2. **Backend-PR** (Feature-Branch, Conventional Commits wie in den neuen Workflows) → Review → Deploy.
 3. **Frontend-PR** → Review → Deploy.
-4. **sita-mcp:** `latest`-Tag ergänzen, veröffentlichen, erstes Release.
-5. **Ende-zu-Ende-Test:** Token im Profil erzeugen, in Claude Code eintragen, `wiki_search` und `wiki_get_page` aufrufen, Token widerrufen. Danach muss der nächste Aufruf mit „Token ungültig“ scheitern.
-6. Später: HTTP-Modus im Swarm, Schreib-Tools, OAuth für Remote-Connectors.
+4. **sita-mcp:** veröffentlichen, erstes Release.
+5. **Deployment:** Service im Stack `sita` und Route im Reverse Proxy (siehe unten).
+6. **Ende-zu-Ende-Test:** Token im Profil erzeugen, mit der URL in Claude Code eintragen, `wiki_search` und `wiki_get_page` aufrufen, Token widerrufen. Danach muss der nächste Aufruf mit „Token ungültig“ scheitern.
+7. Später: Schreib-Tools, OAuth für Remote-Connectors (dann ohne `mcp-remote` in Claude Desktop und claude.ai).
+
+## Deployment (deployment-repo und Reverse Proxy)
+
+Neuer Service im bestehenden Stack `sita/prod/docker-compose.yaml` (und analog `sita/dev`). Im selben Stack erreicht er das Backend direkt unter dem Service-Namen, ohne Umweg über den Proxy:
+
+```yaml
+  mcp:
+    image: registry.simpletactics.de/sita-mcp:<version>
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 64M
+        reservations:
+          cpus: '0.10'
+          memory: 32M
+      replicas: 1          # Limiter und Session-Cache leben im Speicher der Instanz
+      update_config:
+        parallelism: 1
+        order: start-first
+      restart_policy:
+        condition: on-failure
+    environment:
+      - TZ=Europe/Berlin
+      - MCP_TRANSPORT=http
+      - SITA_BACKEND_URL=http://backend:8080
+      - MCP_CLIENT_IP_HEADER=X-Forwarded-For
+    healthcheck:
+      test: ["CMD", "/sita-mcp", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - main
+```
+
+Secrets braucht der Service keine: Die Tokens bringen die Nutzer mit.
+
+**Reverse Proxy:** Die Konfiguration liegt in keinem Repo. Nötig ist:
+
+- Eine Route `https://simpletactics.de/mcp` auf den Service `mcp`, Port 8080, Pfad `/mcp`. Anders als bei `/backend/` darf das Präfix nicht abgeschnitten werden.
+- `X-Forwarded-For` setzen, bei nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`. Der MCP wertet den letzten Eintrag aus, also den, den der Proxy selbst anhängt. Davorgesetzte gefälschte Einträge bleiben wirkungslos.
+- Antworten nicht puffern, weil Streamable HTTP Server-Sent Events nutzen kann. Bei nginx: `proxy_buffering off;` und ein großzügiges `proxy_read_timeout`.
+- Nur über HTTPS erreichbar machen, weil die Tokens im Header mitgehen.

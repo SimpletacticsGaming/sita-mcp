@@ -40,7 +40,7 @@ Dasselbe Docker-Image kann beides:
 
   Hinter einem Reverse Proxy muss `MCP_CLIENT_IP_HEADER` gesetzt sein, z. B. `X-Forwarded-For`. Sonst teilen sich alle Clients die IP des Proxys und blockieren sich gegenseitig. Den Header nur setzen, wenn der Proxy ihn auch selbst schreibt, sonst können Clients ihre IP fälschen.
 
-### Lokal mit Claude Code (stdio)
+### Lokal mit Claude Code (stdio, für Entwicklung; braucht Zugriff auf die Registry)
 
 ```bash
 claude mcp add sita -e SITA_TOKEN=sita_mcp_… \
@@ -49,7 +49,7 @@ claude mcp add sita -e SITA_TOKEN=sita_mcp_… \
 
 Nicht mit `--scope project` anlegen: Dann landet das Token in `.mcp.json` im Projektordner und schnell im Git-Repo.
 
-### Lokal mit Claude Desktop (stdio)
+### Lokal mit Claude Desktop (stdio, für Entwicklung)
 
 `claude_desktop_config.json`:
 
@@ -65,10 +65,28 @@ Nicht mit `--scope project` anlegen: Dann landet das Token in `.mcp.json` im Pro
 }
 ```
 
-### Remote (HTTP)
+### Zentral auf simpletactics.de (HTTP, geplanter Normalfall)
+
+Der MCP läuft im Swarm unter `https://simpletactics.de/mcp` (geplant, siehe [docs/umsetzung-backend-frontend.md](docs/umsetzung-backend-frontend.md#deployment-deployment-repo-und-reverse-proxy)). Docker brauchen die Nutzer dafür nicht.
+
+**Claude Code:**
 
 ```bash
-claude mcp add --transport http sita https://<host>/mcp --header "Authorization: Bearer sita_mcp_…"
+claude mcp add --transport http sita https://simpletactics.de/mcp --header "Authorization: Bearer sita_mcp_…"
+```
+
+**Claude Desktop:** Remote-Connectors können keine eigenen Header setzen. Als Umweg dient die Brücke [`mcp-remote`](https://www.npmjs.com/package/mcp-remote), die Node.js braucht. Diesen Weg habe ich noch nicht getestet.
+
+```json
+{
+  "mcpServers": {
+    "sita": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://simpletactics.de/mcp", "--header", "Authorization:${AUTH_HEADER}"],
+      "env": { "AUTH_HEADER": "Bearer sita_mcp_…" }
+    }
+  }
+}
 ```
 
 ## Konfiguration
