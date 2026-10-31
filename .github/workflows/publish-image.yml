@@ -1,0 +1,62 @@
+# Builds the Docker image and pushes it under a single tag. Emits the resulting
+# digest so a caller can record what it published -- promotion later asserts the
+# final tag resolves to the same digest.
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      ref:
+        required: false
+        type: string
+        default: ""
+    outputs:
+      digest:
+        value: ${{ jobs.publish.outputs.digest }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Build docker image
+        env:
+          IMAGE: ${{ secrets.DOCKER_REPOSITORY }}/sita-mcp
+          VERSION: ${{ inputs.version }}
+        run: |
+          # OCI labels make an image identifiable without its registry tag, which
+          # matters once a tag can be added by promotion rather than by a build.
+          docker build -f Dockerfile -t "$IMAGE:$VERSION" \
+            --build-arg "VERSION=$VERSION" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            .
+      - name: Docker Registry Login
+        env:
+          REGISTRY: ${{ secrets.DOCKER_REPOSITORY }}
+          USERNAME: ${{ secrets.DOCKER_REGISTRY_USER }}
+          PASSWORD: ${{ secrets.DOCKER_REGISTRY_PW }}
+        # --password-stdin keeps the token out of the runner's process list, and
+        # passing it through env keeps it out of the rendered script too.
+        run: printf '%s' "$PASSWORD" | docker login -u "$USERNAME" --password-stdin "$REGISTRY"
+      - name: Push docker image to registry
+        id: push
+        env:
+          IMAGE: ${{ secrets.DOCKER_REPOSITORY }}/sita-mcp
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          docker image push "$IMAGE:$VERSION"
+          digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$VERSION" | cut -d@ -f2)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Pushed \`$IMAGE:$VERSION\` (\`$digest\`)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Docker Registry Logout
+        if: always()
+        run: docker logout ${{ secrets.DOCKER_REPOSITORY }}

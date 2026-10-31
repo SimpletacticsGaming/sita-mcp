@@ -1,0 +1,58 @@
+name: Prepare release branch
+
+# Creates the release/<major>.<minor> branch for the next release. The line is named
+# by semantic-release from the commit messages, so the major/minor decision stays
+# commit-driven rather than typed by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      force_minor:
+        description: "Cut the next minor line even when the change set is only a patch"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Reject a dispatch from outside main
+        if: github.ref_name != 'main'
+        run: |
+          echo "::error::Release branches are cut from main, not '${{ github.ref_name }}'."
+          exit 1
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.ACTION_REPO_SECRET }}
+
+      - id: version
+        uses: SimpletacticsGaming/version-action@v1.0.0
+
+      - name: Create the release branch
+        env:
+          BASE: ${{ steps.version.outputs.base_version }}
+          HAS_RELEASE: ${{ steps.version.outputs.has_release }}
+          FORCE_MINOR: ${{ inputs.force_minor }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$HAS_RELEASE" != "true" && "$FORCE_MINOR" != "true" ]]; then
+            echo "::error::No releasable commit since the last release. Nothing to cut."
+            exit 1
+          fi
+
+          series="${BASE%.*}"
+          branch="release/$series"
+
+          if git ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1; then
+            echo "::error::$branch already exists. Ship a patch on it with cut-rc.yml, or re-run with force_minor to open the next line."
+            exit 1
+          fi
+
+          git branch "$branch"
+          git push origin "$branch"
+          echo "Cut \`$branch\` for \`$BASE\`" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,53 @@
+name: Commit messages
+
+on:
+  pull_request:
+
+jobs:
+  commitlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install commitlint
+        run: npm install --no-save --no-audit --no-fund @commitlint/cli@19.6.1 @commitlint/config-conventional@19.6.0
+      - name: Write the shared config
+        # Written at run time rather than committed so the repo stays free of Node
+        # tooling it does not otherwise need. It has to land in the workspace:
+        # commitlint resolves `extends` relative to the config file, so a config in
+        # $RUNNER_TEMP cannot see the node_modules installed above.
+        run: |
+          cat > commitlint.config.mjs <<'CONFIG'
+          export default {
+            extends: ["@commitlint/config-conventional"],
+            ignores: [(message) => /^(Merge|Revert) /.test(message)],
+          };
+          CONFIG
+      - name: Lint the commits this PR adds
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # Computed here rather than taken from pull_request.base.sha, which goes
+          # stale as soon as the base branch moves.
+          base="$(git merge-base "origin/$BASE_REF" HEAD)"
+          npx commitlint --config commitlint.config.mjs \
+            --from "$base" --to HEAD --verbose
+
+  pr-title:
+    # A squash merge takes the PR title as the commit subject, so an unlinted title
+    # silently becomes a commit semantic-release cannot classify.
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          subjectPattern: ^(?![A-Z]).+$
+          subjectPatternError: |
+            The subject "{subject}" must start lowercase, matching the commit convention.

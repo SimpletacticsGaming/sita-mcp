@@ -1,0 +1,101 @@
+name: Promote release candidate
+
+# Turns an existing release candidate into a release. Nothing is rebuilt: the image
+# published for the candidate is retagged in the registry, so what reaches production
+# is bit-identical to what was tested. The run fails if the digests disagree.
+on:
+  workflow_dispatch:
+    inputs:
+      rc_tag:
+        description: "The candidate to promote, e.g. v1.4.0-rc.2"
+        required: true
+        type: string
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      tag_exists: ${{ steps.version.outputs.tag_exists }}
+      commit_sha: ${{ steps.version.outputs.commit_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Everything is derived from the candidate's own commit, so a later commit
+          # on the release branch cannot sneak into the release.
+          ref: ${{ inputs.rc_tag }}
+      - id: version
+        uses: SimpletacticsGaming/version-action@v1.0.0
+        with:
+          channel: release
+          promote_from: ${{ inputs.rc_tag }}
+
+  promote_image:
+    needs: version
+    if: needs.version.outputs.tag_exists == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: imjasonh/setup-crane@v0.4
+      - name: Retag the candidate image as the release
+        env:
+          REG: ${{ secrets.DOCKER_REPOSITORY }}
+          USERNAME: ${{ secrets.DOCKER_REGISTRY_USER }}
+          PASSWORD: ${{ secrets.DOCKER_REGISTRY_PW }}
+          RC: ${{ inputs.rc_tag }}
+          FINAL: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$PASSWORD" | crane auth login "$REG" -u "$USERNAME" --password-stdin
+
+          # The git tag carries a `v` prefix; image tags do not.
+          rc_version="${RC#v}"
+          image="$REG/sita-mcp"
+
+          before="$(crane digest "$image:$rc_version")"
+          echo "candidate $image:$rc_version is $before"
+
+          # A registry-side tag alias: one manifest PUT, no layers moved, and the
+          # digest is preserved by construction rather than by convention.
+          crane tag "$image:$rc_version" "$FINAL"
+
+          after="$(crane digest "$image:$FINAL")"
+          if [[ "$before" != "$after" ]]; then
+            echo "::error::Promotion changed the image: $before became $after."
+            exit 1
+          fi
+          echo "Promoted \`$image:$rc_version\` to \`:$FINAL\` (\`$after\`)" >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    needs: [version, promote_image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.rc_tag }}
+      - name: Tag the release and publish it
+        env:
+          GH_TOKEN: ${{ secrets.ACTION_REPO_SECRET }}
+          TAG: ${{ needs.version.outputs.tag }}
+          RC: ${{ inputs.rc_tag }}
+          SHA: ${{ needs.version.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          git tag "$TAG" "$SHA"
+          git push origin "$TAG"
+          gh release create "$TAG" --target "$SHA" --generate-notes \
+            --notes "Promoted from \`$RC\`. The image is the one built for that candidate, retagged."
+          echo "Released \`$TAG\` from \`$RC\`" >> "$GITHUB_STEP_SUMMARY"
+
+  already_released:
+    needs: version
+    if: needs.version.outputs.tag_exists == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "\`${{ needs.version.outputs.tag }}\` already exists; promotion is a no-op." \
+            >> "$GITHUB_STEP_SUMMARY"

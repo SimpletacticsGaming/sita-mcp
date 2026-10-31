@@ -1,0 +1,20 @@
+# Local test of the HTTP mode: docker compose up --build
+# Then connect an MCP client to http://localhost:8080/mcp with your sita login (see README).
+services:
+  sita-mcp:
+    build:
+      context: .
+      args:
+        VERSION: local
+    image: sita-mcp:local
+    ports:
+      - "8080:8080"
+    environment:
+      MCP_TRANSPORT: http
+      SITA_BACKEND_URL: ${SITA_BACKEND_URL:-https://simpletactics.de/backend}
+      LOG_LEVEL: debug
+    healthcheck:
+      test: ["CMD", "/sita-mcp", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

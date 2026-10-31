@@ -1,0 +1,8 @@
+/sita-mcp
+/sita-mcp.exe
+/dist/
+*.test
+*.out
+.env
+.idea/
+.vscode/

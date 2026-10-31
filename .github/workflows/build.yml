@@ -1,0 +1,45 @@
+# Vets, lints and tests the code. Reused by pipeline.yml and cut-rc.yml so a release
+# candidate is checked exactly the way a dev build is. The binary itself is built
+# inside the Docker image by publish-image.yml.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit or tag to check. Defaults to the triggering ref."
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  # Runs before anything is published: a broken build must never reach the registry.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0

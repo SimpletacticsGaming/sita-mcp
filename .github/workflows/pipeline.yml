@@ -1,0 +1,32 @@
+name: pipeline
+
+# Every push tests and publishes a dev image tagged <next-version>-g<sha>. Nothing
+# here tags or releases: release candidates come from cut-rc.yml, and final releases
+# are promotions of a candidate (promote.yml), never a rebuild.
+on:
+  push:
+
+jobs:
+  version:
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # Required: the version is derived from commit history back to the last tag.
+          fetch-depth: 0
+      - name: Generate version
+        id: version
+        uses: SimpletacticsGaming/version-action@v1.0.0
+
+  build:
+    uses: ./.github/workflows/build.yml
+
+  publish:
+    needs: [version, build]
+    uses: ./.github/workflows/publish-image.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.version.outputs.version }}

@@ -1,0 +1,74 @@
+name: Cut release candidate
+
+# Dispatch on a release/<major>.<minor> branch. This is the one authoritative build:
+# the image it publishes is the image that eventually reaches production, retagged
+# rather than rebuilt. Nothing downstream recompiles.
+on:
+  workflow_dispatch:
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      tag_exists: ${{ steps.version.outputs.tag_exists }}
+    steps:
+      - name: Reject a dispatch from outside a release branch
+        if: ${{ !startsWith(github.ref_name, 'release/') }}
+        run: |
+          echo "::error::Cut release candidates from a release/<major>.<minor> branch, not '${{ github.ref_name }}'. Use prepare-release.yml to create one."
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: version
+        uses: SimpletacticsGaming/version-action@v1.0.0
+        with:
+          channel: rc
+
+  build:
+    needs: version
+    if: needs.version.outputs.tag_exists == 'false'
+    uses: ./.github/workflows/build.yml
+
+  publish:
+    needs: [version, build]
+    uses: ./.github/workflows/publish-image.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.version.outputs.version }}
+
+  tag:
+    needs: [version, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tag the candidate and open a prerelease
+        env:
+          GH_TOKEN: ${{ secrets.ACTION_REPO_SECRET }}
+          TAG: ${{ needs.version.outputs.tag }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git tag "$TAG"
+          git push origin "$TAG"
+          # The digest is recorded for audit. Promotion re-resolves it from the
+          # registry rather than trusting a value carried between workflow runs.
+          gh release create "$TAG" --prerelease --generate-notes \
+            --notes "Image \`sita-mcp:$VERSION\` @ \`$DIGEST\`"
+          echo "Cut \`$TAG\` from \`$DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
+
+  already_cut:
+    needs: version
+    if: needs.version.outputs.tag_exists == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "\`${{ needs.version.outputs.tag }}\` already points at this commit; nothing to cut." \
+            >> "$GITHUB_STEP_SUMMARY"
