@@ -37,8 +37,6 @@ type Config struct {
 	// Throttling of clients sending invalid tokens in HTTP mode, per client IP.
 	AuthMaxFailures int
 	AuthBlockWindow time.Duration
-	// TokenCacheTTL is how long an accepted token is trusted before asking the backend again.
-	TokenCacheTTL time.Duration
 	// ClientIPHeader is a header set by the trusted reverse proxy, e.g. X-Forwarded-For.
 	ClientIPHeader string
 
@@ -75,9 +73,6 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if cfg.AuthBlockWindow, err = time.ParseDuration(withDefault(getenv("MCP_AUTH_BLOCK_WINDOW"), "15m")); err != nil {
 		return Config{}, fmt.Errorf("MCP_AUTH_BLOCK_WINDOW: %w", err)
-	}
-	if cfg.TokenCacheTTL, err = time.ParseDuration(withDefault(getenv("MCP_TOKEN_CACHE_TTL"), "1m")); err != nil {
-		return Config{}, fmt.Errorf("MCP_TOKEN_CACHE_TTL: %w", err)
 	}
 	if err = cfg.LogLevel.UnmarshalText([]byte(withDefault(getenv("LOG_LEVEL"), "info"))); err != nil {
 		return Config{}, fmt.Errorf("LOG_LEVEL: %w", err)

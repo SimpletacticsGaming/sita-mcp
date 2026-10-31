@@ -3,8 +3,7 @@ package sita_test
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/SimpletacticsGaming/sita-mcp/internal/sita"
@@ -20,6 +19,74 @@ func newClient(b *sitatest.Backend) *sita.Client {
 	return sita.NewClient(b.URL, b.Client())
 }
 
+func TestLoginIsCachedAcrossCalls(t *testing.T) {
+	b := sitatest.New(t)
+	c := newClient(b)
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Go(func() {
+			if _, err := c.Topic(ctx, alice, 0); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+
+	if got := b.Logins(); got != 1 {
+		t.Fatalf("logins = %d, want 1", got)
+	}
+}
+
+func TestReloginAfterSessionExpired(t *testing.T) {
+	b := sitatest.New(t)
+	c := newClient(b)
+	ctx := context.Background()
+
+	if _, err := c.Topic(ctx, alice, 0); err != nil {
+		t.Fatal(err)
+	}
+	b.ExpireSessions()
+	topic, err := c.Topic(ctx, alice, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if topic.Topic != "Regeln" {
+		t.Fatalf("topic = %q", topic.Topic)
+	}
+	if got := b.Logins(); got != 2 {
+		t.Fatalf("logins = %d, want 2", got)
+	}
+}
+
+func TestForbiddenNodeDoesNotTriggerRelogin(t *testing.T) {
+	b := sitatest.New(t)
+	c := newClient(b)
+
+	if _, err := c.Entry(context.Background(), bob, 5); !errors.Is(err, sita.ErrForbidden) {
+		t.Fatalf("err = %v, want ErrForbidden", err)
+	}
+	if got := b.Logins(); got != 1 {
+		t.Fatalf("logins = %d, want 1", got)
+	}
+}
+
+func TestRevokedTokenIsRejected(t *testing.T) {
+	b := sitatest.New(t)
+	c := newClient(b)
+	ctx := context.Background()
+
+	if _, err := c.Topic(ctx, alice, 0); err != nil {
+		t.Fatal(err)
+	}
+	// Revoking deletes the token and its sessions; the re-login then fails.
+	b.Revoke(sitatest.AliceToken)
+	if _, err := c.Topic(ctx, alice, 0); !errors.Is(err, sita.ErrUnauthorized) {
+		t.Fatalf("err = %v, want ErrUnauthorized", err)
+	}
+}
+
 func TestErrors(t *testing.T) {
 	b := sitatest.New(t)
 	c := newClient(b)
@@ -30,7 +97,6 @@ func TestErrors(t *testing.T) {
 		call func() error
 		want error
 	}{
-		{"forbidden", func() error { _, err := c.Entry(ctx, bob, 5); return err }, sita.ErrForbidden},
 		{"not found", func() error { _, err := c.Entry(ctx, alice, 99); return err }, sita.ErrNotFound},
 		{"unknown type", func() error { _, err := c.NodeType(ctx, alice, 99); return err }, sita.ErrNotFound},
 		{"closed poll", func() error { _, err := c.Poll(ctx, alice, 6); return err }, sita.ErrPollClosed},
@@ -43,20 +109,6 @@ func TestErrors(t *testing.T) {
 				t.Fatalf("err = %v, want %v", err, tt.want)
 			}
 		})
-	}
-}
-
-func TestRevokedTokenIsRejected(t *testing.T) {
-	b := sitatest.New(t)
-	c := newClient(b)
-	ctx := context.Background()
-
-	if _, err := c.Topic(ctx, alice, 0); err != nil {
-		t.Fatal(err)
-	}
-	b.Revoke(sitatest.AliceToken)
-	if _, err := c.Topic(ctx, alice, 0); !errors.Is(err, sita.ErrUnauthorized) {
-		t.Fatalf("err = %v, want ErrUnauthorized", err)
 	}
 }
 
@@ -90,27 +142,13 @@ func TestVerify(t *testing.T) {
 	c := newClient(b)
 	ctx := context.Background()
 
-	info, err := c.Verify(ctx, bob)
-	if err != nil {
+	if err := c.Verify(ctx, bob); err != nil {
 		t.Fatal(err)
 	}
-	if info.Username != "bob" {
-		t.Fatalf("info = %+v", info)
+	if err := c.Verify(ctx, bob); err != nil || b.Logins() != 1 {
+		t.Fatalf("second verify: err %v, logins %d, want cached session", err, b.Logins())
 	}
-	if _, err := c.Verify(ctx, sita.Credentials{Token: "bogus"}); !errors.Is(err, sita.ErrUnauthorized) {
+	if err := c.Verify(ctx, sita.Credentials{Token: "bogus"}); !errors.Is(err, sita.ErrUnauthorized) {
 		t.Fatalf("bogus token: %v", err)
-	}
-}
-
-func TestVerifyTreatsForbiddenAsUnauthorized(t *testing.T) {
-	// Spring Security answers unauthenticated requests with 403 unless configured otherwise.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-	}))
-	t.Cleanup(srv.Close)
-
-	_, err := sita.NewClient(srv.URL, srv.Client()).Verify(context.Background(), alice)
-	if !errors.Is(err, sita.ErrUnauthorized) {
-		t.Fatalf("err = %v, want ErrUnauthorized", err)
 	}
 }

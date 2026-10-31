@@ -119,7 +119,7 @@ func TestToolErrors(t *testing.T) {
 
 	revoked := connect(t, sita.Credentials{Token: "revoked"})
 	res = call(t, revoked, "wiki_search", map[string]any{"query": "x"})
-	if !res.IsError || !strings.Contains(textOf(res), "API token") {
+	if !res.IsError || !strings.Contains(textOf(res), "MCP token") {
 		t.Fatalf("revoked token: %s", textOf(res))
 	}
 }

@@ -2,7 +2,7 @@
 
 MCP-Server, der LLM-Clients wie Claude Code oder Claude Desktop **Lesezugriff auf das Simpletactics-Wiki** gibt.
 
-Der Server spricht mit der öffentlichen API von **sita-backend** (`/api/wiki/...`). Er authentifiziert sich mit einem **persönlichen MCP-Token**, das jeder Nutzer auf simpletactics.de selbst erzeugt und jederzeit widerrufen kann. Es gelten dieselben Wiki-Rechte (`WIKI_READ`) wie auf der Webseite: Jeder sieht nur, was er auch im Browser sehen darf. Sein Passwort muss niemand im MCP hinterlegen.
+Der Server spricht mit der öffentlichen API von **sita-backend** (`/api/wiki/...`). Er meldet sich mit einem **persönlichen MCP-Token** an, das jeder Nutzer auf simpletactics.de selbst erzeugt und jederzeit widerrufen kann, und bekommt dafür eine normale Session, wie das Frontend nach dem Login. Es gelten dieselben Wiki-Rechte (`WIKI_READ`) wie auf der Webseite: Jeder sieht nur, was er auch im Browser sehen darf. Sein Passwort muss niemand im MCP hinterlegen.
 
 > **Stand:** Backend und Frontend unterstützen die MCP-Tokens noch nicht. Den Vertrag, den der MCP erwartet, beschreibt [docs/api-tokens.md](docs/api-tokens.md).
 
@@ -25,7 +25,7 @@ Das Backend hat keine Suche. Der Server durchläuft deshalb beim ersten `wiki_se
 2. Das Token im MCP-Client hinterlegen (Beispiele unten).
 3. Wird es nicht mehr gebraucht oder ist es in falsche Hände geraten: im Profil widerrufen. Ab dann lehnt das Backend es sofort ab.
 
-Das Token steht im Klartext in der Konfiguration deines MCP-Clients. Anders als ein Passwort erlaubt es aber nur Lesen, gilt nur für den MCP und lässt sich einzeln widerrufen, ohne dass du dein Passwort ändern musst.
+Das Token steht im Klartext in der Konfiguration deines MCP-Clients. Anders als dein Passwort gilt es nur für den MCP, läuft von selbst ab und lässt sich einzeln widerrufen, ohne dass du dein Passwort ändern musst. Behandle es trotzdem wie ein Passwort: Der MCP meldet sich damit wie du selbst an.
 
 ## Betriebsarten
 
@@ -34,7 +34,7 @@ Dasselbe Docker-Image kann beides:
 - **`stdio` (Standard):** Claude startet den Container selbst (`docker run -i …`) und redet über stdin/stdout mit ihm. Das Token kommt aus `SITA_TOKEN`.
 - **`http`:** Der Container läuft dauerhaft, z. B. im Swarm, und stellt Streamable HTTP unter `/mcp` bereit. Jeder Client schickt sein eigenes Token mit: `Authorization: Bearer <token>`.
 
-  Ohne gültiges Token antwortet der Server mit `401`. Tokens, die das Backend akzeptiert hat, merkt er sich für `MCP_TOKEN_CACHE_TTL` (Standard 1 Minute), damit nicht jeder MCP-Request eine Prüfung im Backend auslöst. Die Wiki-Abfragen selbst schickt er immer mit dem Token ans Backend, ein widerrufenes Token liefert also sofort keine Daten mehr. TLS muss der Reverse Proxy übernehmen.
+  Ohne gültiges Token antwortet der Server mit `401`. Pro Token meldet er sich einmal beim Backend an (`POST /login/mcp`) und nutzt dann die Session, bis sie ungültig wird. Wird das Token widerrufen, löscht das Backend auch seine Sessions, und der nächste Aufruf scheitert. TLS muss der Reverse Proxy übernehmen.
 
   **Limiter:** Nach `MCP_AUTH_MAX_FAILURES` abgelehnten Tokens (Standard 5) innerhalb von `MCP_AUTH_BLOCK_WINDOW` (Standard 15 Minuten) antwortet der Server einer Client-IP mit `429` und `Retry-After`. Requests ganz ohne Token zählen nicht.
 
@@ -78,7 +78,6 @@ claude mcp add --transport http sita https://<host>/mcp --header "Authorization:
 | `MCP_TRANSPORT` | `stdio` | `stdio` oder `http` |
 | `SITA_TOKEN` | – | MCP-Token für den stdio-Modus (Pflicht) |
 | `MCP_HTTP_ADDR` | `:8080` | Listen-Adresse im HTTP-Modus |
-| `MCP_TOKEN_CACHE_TTL` | `1m` | Wie lange ein akzeptiertes Token ohne erneute Prüfung durchgelassen wird (HTTP), `0` prüft jeden Request |
 | `MCP_AUTH_MAX_FAILURES` | `5` | Abgelehnte Tokens pro IP bis zur Sperre (HTTP), `0` schaltet den Limiter ab |
 | `MCP_AUTH_BLOCK_WINDOW` | `15m` | Zeitfenster für die Fehlversuche und Dauer der Sperre |
 | `MCP_CLIENT_IP_HEADER` | – | Header mit der Client-IP vom Reverse Proxy, z. B. `X-Forwarded-For` (letzter Eintrag zählt) |
@@ -105,7 +104,7 @@ npx @modelcontextprotocol/inspector docker run -i --rm -e SITA_TOKEN sita-mcp:lo
 Aufbau:
 
 - `cmd/sita-mcp`: Einstiegspunkt, wählt stdio oder HTTP
-- `internal/sita`: Client für sita-backend (Token-Auth, Wiki-Endpunkte), dazu `sitatest`, ein Fake-Backend für Tests
+- `internal/sita`: Client für sita-backend (Login per MCP-Token, Session-Cache, Wiki-Endpunkte), dazu `sitatest`, ein Fake-Backend für Tests
 - `internal/wiki`: Seiten, Breadcrumbs, Baum, Suchindex, HTML→Markdown
 - `internal/auth`: Token aus dem `Authorization`-Header prüfen, Limiter (HTTP-Modus)
 - `internal/mcpserver`: Tool-Definitionen

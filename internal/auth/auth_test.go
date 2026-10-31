@@ -38,12 +38,12 @@ func TestFromHeader(t *testing.T) {
 // fakeVerifier accepts the token "good" and counts its calls.
 type fakeVerifier struct{ calls atomic.Int32 }
 
-func (f *fakeVerifier) Verify(_ context.Context, c sita.Credentials) (sita.TokenInfo, error) {
+func (f *fakeVerifier) Verify(_ context.Context, c sita.Credentials) error {
 	f.calls.Add(1)
 	if c.Token == "good" {
-		return sita.TokenInfo{Username: "alice"}, nil
+		return nil
 	}
-	return sita.TokenInfo{}, sita.ErrUnauthorized
+	return sita.ErrUnauthorized
 }
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -82,24 +82,6 @@ func TestGuard(t *testing.T) {
 		if want == http.StatusUnauthorized && rec.Header().Get("WWW-Authenticate") == "" {
 			t.Errorf("%q: missing WWW-Authenticate", header)
 		}
-	}
-}
-
-func TestGuardCachesAcceptedTokens(t *testing.T) {
-	v := &fakeVerifier{}
-	h := (&auth.Guard{Verifier: v, VerifyCacheTTL: time.Minute, Logger: discard}).Wrap(teapot)
-
-	for range 3 {
-		if rec := serve(h, "192.0.2.1:1", bearer("good")); rec.Code != http.StatusTeapot {
-			t.Fatalf("status %d", rec.Code)
-		}
-	}
-	for range 2 {
-		serve(h, "192.0.2.1:1", bearer("bad"))
-	}
-	// One check for the good token; rejected tokens are never cached.
-	if got := v.calls.Load(); got != 3 {
-		t.Fatalf("verifier calls = %d, want 3", got)
 	}
 }
 

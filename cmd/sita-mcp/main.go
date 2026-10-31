@@ -80,7 +80,7 @@ func serveHTTP(ctx context.Context, cfg config.Config, client *sita.Client, svc 
 		Logger:    logger,
 	})
 
-	guard := &auth.Guard{Verifier: client, ClientIPHeader: cfg.ClientIPHeader, VerifyCacheTTL: cfg.TokenCacheTTL, Logger: logger}
+	guard := &auth.Guard{Verifier: client, ClientIPHeader: cfg.ClientIPHeader, Logger: logger}
 	if cfg.AuthMaxFailures > 0 {
 		guard.Limiter = auth.NewLimiter(cfg.AuthMaxFailures, cfg.AuthBlockWindow)
 	}

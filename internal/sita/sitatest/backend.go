@@ -3,6 +3,7 @@ package sitatest
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -33,15 +34,23 @@ const (
 	BobToken   = "sita_mcp_bob_token"
 )
 
+type session struct {
+	user  string
+	token string
+}
+
 // Backend is a fake sita-backend. Its fields may be changed by tests before requests are made.
 type Backend struct {
 	*httptest.Server
 
 	mu       sync.Mutex
 	Nodes    map[int]*Node
-	Tokens   map[string]string       // API token → username
+	Tokens   map[string]string       // MCP token → username
 	Hidden   map[string]map[int]bool // username → node ids the user may not read
+	sessions map[string]session      // session id → owner
+	logins   int
 	requests int
+	nextID   int
 }
 
 // New starts a fake backend seeded with a small wiki:
@@ -71,12 +80,20 @@ func New(t testing.TB) *Backend {
 			5: {ID: 5, Type: sita.NodeEntry, Title: "Geheime Kampagne", Content: "<p>Der Drache lebt im Norden.</p>"},
 			6: {ID: 6, Type: sita.NodePoll, Title: "Alte Umfrage", Closed: true},
 		},
-		Tokens: map[string]string{AliceToken: "alice", BobToken: "bob"},
-		Hidden: map[string]map[int]bool{"bob": {2: true, 5: true}},
+		Tokens:   map[string]string{AliceToken: "alice", BobToken: "bob"},
+		Hidden:   map[string]map[int]bool{"bob": {2: true, 5: true}},
+		sessions: map[string]session{},
 	}
 	b.Server = httptest.NewServer(http.HandlerFunc(b.serve))
 	t.Cleanup(b.Close)
 	return b
+}
+
+// Logins returns how many successful logins happened.
+func (b *Backend) Logins() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.logins
 }
 
 // Requests returns how many requests were served.
@@ -86,11 +103,23 @@ func (b *Backend) Requests() int {
 	return b.requests
 }
 
-// Revoke invalidates token, as if the user deleted it on the website.
+// ExpireSessions invalidates all sessions, as if they timed out.
+func (b *Backend) ExpireSessions() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.sessions = map[string]session{}
+}
+
+// Revoke deletes token and, like ON DELETE CASCADE, every session created with it.
 func (b *Backend) Revoke(token string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.Tokens, token)
+	for id, s := range b.sessions {
+		if s.token == token {
+			delete(b.sessions, id)
+		}
+	}
 }
 
 func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
@@ -98,16 +127,37 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	defer b.mu.Unlock()
 	b.requests++
 
-	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	user, known := b.Tokens[token]
-	if !ok || !known {
-		w.WriteHeader(http.StatusUnauthorized)
+	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/login/mcp":
+		var req struct{ Token string }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		user, ok := b.Tokens[req.Token]
+		if !ok {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		b.logins++
+		b.nextID++
+		id := fmt.Sprintf("00000000-0000-0000-0000-%012d", b.nextID)
+		b.sessions[id] = session{user: user, token: req.Token}
+		writeJSON(w, map[string]any{"successful": true, "sessionId": id, "setPassword": false})
+		return
+	case r.Method == http.MethodGet && r.URL.Path == "/loggedIn":
+		_, ok := b.sessions[r.Header.Get("authentication")]
+		writeJSON(w, ok)
 		return
 	}
-	if r.Method == http.MethodGet && r.URL.Path == "/api/tokens/current" {
-		writeJSON(w, sita.TokenInfo{Name: "test", Username: user})
+
+	s, ok := b.sessions[r.Header.Get("authentication")]
+	if !ok {
+		// Like Spring Security without an entry point: anonymous requests get 403.
+		w.WriteHeader(http.StatusForbidden)
 		return
 	}
+	user := s.user
 
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	id, err := strconv.Atoi(parts[len(parts)-1])
