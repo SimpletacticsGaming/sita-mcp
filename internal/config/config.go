@@ -37,6 +37,12 @@ type Config struct {
 	IndexTTL      time.Duration
 	IndexMaxNodes int
 
+	// Failed-login throttling in HTTP mode, per client IP and per username.
+	LoginMaxFailures int
+	LoginBlockWindow time.Duration
+	// ClientIPHeader is a header set by the trusted reverse proxy, e.g. X-Forwarded-For.
+	ClientIPHeader string
+
 	LogLevel slog.Level
 }
 
@@ -51,6 +57,8 @@ func Load(getenv func(string) string) (Config, error) {
 		Username:      getenv("SITA_USERNAME"),
 		Password:      getenv("SITA_PASSWORD"),
 		Session:       getenv("SITA_SESSION"),
+
+		ClientIPHeader: getenv("MCP_CLIENT_IP_HEADER"),
 	}
 
 	switch cfg.Transport {
@@ -65,6 +73,12 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if cfg.IndexMaxNodes, err = strconv.Atoi(withDefault(getenv("WIKI_INDEX_MAX_NODES"), "2000")); err != nil || cfg.IndexMaxNodes < 1 {
 		return Config{}, fmt.Errorf("WIKI_INDEX_MAX_NODES must be a positive integer")
+	}
+	if cfg.LoginMaxFailures, err = strconv.Atoi(withDefault(getenv("MCP_LOGIN_MAX_FAILURES"), "5")); err != nil || cfg.LoginMaxFailures < 0 {
+		return Config{}, fmt.Errorf("MCP_LOGIN_MAX_FAILURES must be a non-negative integer (0 disables the limit)")
+	}
+	if cfg.LoginBlockWindow, err = time.ParseDuration(withDefault(getenv("MCP_LOGIN_BLOCK_WINDOW"), "15m")); err != nil {
+		return Config{}, fmt.Errorf("MCP_LOGIN_BLOCK_WINDOW: %w", err)
 	}
 	if err = cfg.LogLevel.UnmarshalText([]byte(withDefault(getenv("LOG_LEVEL"), "info"))); err != nil {
 		return Config{}, fmt.Errorf("LOG_LEVEL: %w", err)

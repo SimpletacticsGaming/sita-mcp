@@ -28,6 +28,10 @@ Dasselbe Docker-Image kann beides:
 
   Ohne gültige Zugangsdaten antwortet der Server mit `401`. TLS muss der Reverse Proxy übernehmen, weil sonst Passwörter im Klartext übertragen werden.
 
+  **Login-Limiter:** Nach `MCP_LOGIN_MAX_FAILURES` fehlgeschlagenen Logins (Standard 5) innerhalb von `MCP_LOGIN_BLOCK_WINDOW` (Standard 15 Minuten) antwortet der Server mit `429` und `Retry-After`. Gezählt wird pro Client-IP und pro Benutzername. Fehlende Zugangsdaten zählen nicht, die Website ist nicht betroffen.
+
+  Hinter einem Reverse Proxy muss `MCP_CLIENT_IP_HEADER` gesetzt sein, z. B. `X-Forwarded-For`. Sonst teilen sich alle Clients die IP des Proxys und blockieren sich gegenseitig. Den Header nur setzen, wenn der Proxy ihn auch selbst schreibt, sonst können Clients ihre IP fälschen.
+
 ### Lokal mit Claude Code (stdio)
 
 ```bash
@@ -66,6 +70,9 @@ claude mcp add --transport http sita https://<host>/mcp \
 |---|---|---|
 | `MCP_TRANSPORT` | `stdio` | `stdio` oder `http` |
 | `MCP_HTTP_ADDR` | `:8080` | Listen-Adresse im HTTP-Modus |
+| `MCP_LOGIN_MAX_FAILURES` | `5` | Fehlversuche pro IP bzw. Benutzer bis zur Sperre (HTTP), `0` schaltet den Limiter ab |
+| `MCP_LOGIN_BLOCK_WINDOW` | `15m` | Zeitfenster für die Fehlversuche und Dauer der Sperre |
+| `MCP_CLIENT_IP_HEADER` | – | Header mit der Client-IP vom Reverse Proxy, z. B. `X-Forwarded-For` (letzter Eintrag zählt) |
 | `SITA_BACKEND_URL` | `https://simpletactics.de/backend` | Basis-URL von sita-backend; im Swarm z. B. die interne Service-URL |
 | `SITA_WIKI_PUBLIC_URL` | `https://simpletactics.de/wiki/?ar=` | Präfix für öffentliche Links, die id wird angehängt |
 | `SITA_AUTH_HEADER` | `authentication` | Header, in dem das Backend die Session erwartet |

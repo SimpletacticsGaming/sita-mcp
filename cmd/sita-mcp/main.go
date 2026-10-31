@@ -80,8 +80,13 @@ func serveHTTP(ctx context.Context, cfg config.Config, client *sita.Client, svc 
 		Logger:    logger,
 	})
 
+	guard := &auth.Guard{Verifier: client, ClientIPHeader: cfg.ClientIPHeader, Logger: logger}
+	if cfg.LoginMaxFailures > 0 {
+		guard.Limiter = auth.NewLimiter(cfg.LoginMaxFailures, cfg.LoginBlockWindow)
+	}
+
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", auth.Require(client, logger, mcpHandler))
+	mux.Handle("/mcp", guard.Wrap(mcpHandler))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})

@@ -17,7 +17,8 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Transport != config.TransportStdio || cfg.BackendURL != "https://simpletactics.de/backend" ||
-		cfg.AuthHeader != "authentication" || cfg.IndexTTL != 10*time.Minute || cfg.IndexMaxNodes != 2000 {
+		cfg.AuthHeader != "authentication" || cfg.IndexTTL != 10*time.Minute || cfg.IndexMaxNodes != 2000 ||
+		cfg.LoginMaxFailures != 5 || cfg.LoginBlockWindow != 15*time.Minute {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -39,6 +40,8 @@ func TestLoadErrors(t *testing.T) {
 		"bad ttl":                   {"WIKI_INDEX_TTL": "soon", "SITA_SESSION": "x"},
 		"bad max nodes":             {"WIKI_INDEX_MAX_NODES": "0", "SITA_SESSION": "x"},
 		"bad log level":             {"LOG_LEVEL": "loud", "SITA_SESSION": "x"},
+		"bad login window":          {"MCP_LOGIN_BLOCK_WINDOW": "1x", "SITA_SESSION": "x"},
+		"negative max failures":     {"MCP_LOGIN_MAX_FAILURES": "-1", "SITA_SESSION": "x"},
 	} {
 		if _, err := config.Load(env(e)); err == nil {
 			t.Errorf("%s: expected error", name)
