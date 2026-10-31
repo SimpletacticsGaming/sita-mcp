@@ -85,8 +85,11 @@ func serveHTTP(ctx context.Context, cfg config.Config, client *sita.Client, svc 
 		guard.Limiter = auth.NewLimiter(cfg.AuthMaxFailures, cfg.AuthBlockWindow)
 	}
 
+	guarded := guard.Wrap(mcpHandler)
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", guard.Wrap(mcpHandler))
+	// Token in the Authorization header (Claude Code) or in the URL (Claude Desktop, claude.ai).
+	mux.Handle("/mcp", guarded)
+	mux.Handle("/mcp/{"+auth.TokenPathValue+"}", guarded)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})

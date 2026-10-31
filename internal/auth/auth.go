@@ -1,8 +1,13 @@
 // Package auth extracts sita credentials from HTTP requests.
 //
-// HTTP clients authenticate with their personal MCP API token from simpletactics.de:
+// HTTP clients authenticate with their personal MCP token from simpletactics.de,
+// either in a header (Claude Code)
 //
 //	Authorization: Bearer <token>
+//
+// or in the URL, for clients that cannot set headers (Claude Desktop, claude.ai)
+//
+//	https://simpletactics.de/mcp/<token>
 package auth
 
 import (
@@ -17,6 +22,9 @@ import (
 
 	"github.com/SimpletacticsGaming/sita-mcp/internal/sita"
 )
+
+// TokenPathValue is the name of the path wildcard that carries the token, as in "/mcp/{token}".
+const TokenPathValue = "token"
 
 // FromHeader returns the token in the Authorization header of h.
 func FromHeader(h http.Header) (sita.Credentials, bool) {
@@ -59,8 +67,11 @@ func (g *Guard) Wrap(next http.Handler) http.Handler {
 
 		creds, ok := FromHeader(r.Header)
 		if !ok {
+			creds, ok = fromPath(r)
+		}
+		if !ok {
 			// Not a guess, so not counted: a misconfigured client must not lock out a shared IP.
-			unauthorized(w, "missing token: send 'Authorization: Bearer <MCP token>'; tokens are created on simpletactics.de")
+			unauthorized(w, "missing token: send 'Authorization: Bearer <MCP token>' or use the URL /mcp/<MCP token>; tokens are created on simpletactics.de")
 			return
 		}
 		// The client caches the session per token, so this only reaches the backend on the first request.
@@ -78,6 +89,12 @@ func (g *Guard) Wrap(next http.Handler) http.Handler {
 			http.Error(w, "sita-backend not reachable", http.StatusBadGateway)
 			return
 		}
+		// Tool handlers read the token from the Authorization header, wherever it came from.
+		// The token is also removed from the URL so that nothing downstream can log it.
+		r = r.Clone(r.Context())
+		r.Header.Set("Authorization", "Bearer "+creds.Token)
+		r.URL.Path, r.URL.RawPath, r.RequestURI = "/mcp", "", "/mcp"
+		r.SetPathValue(TokenPathValue, "")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -101,4 +118,13 @@ func clientIP(r *http.Request, header string) string {
 func unauthorized(w http.ResponseWriter, msg string) {
 	w.Header().Set("WWW-Authenticate", `Bearer realm="sita-mcp"`)
 	http.Error(w, msg, http.StatusUnauthorized)
+}
+
+// fromPath returns the token from the "/mcp/{token}" route, if any.
+func fromPath(r *http.Request) (sita.Credentials, bool) {
+	token := strings.TrimSpace(r.PathValue(TokenPathValue))
+	if token == "" {
+		return sita.Credentials{}, false
+	}
+	return sita.Credentials{Token: token}, true
 }

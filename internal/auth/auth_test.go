@@ -50,8 +50,12 @@ var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 var teapot = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
 
-func serve(h http.Handler, remote string, headers map[string]string) *httptest.ResponseRecorder {
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", nil)
+func serve(h http.Handler, remote string, headers map[string]string, path ...string) *httptest.ResponseRecorder {
+	target := "/mcp"
+	if len(path) > 0 {
+		target = path[0]
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, target, nil)
 	req.RemoteAddr = remote
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -123,5 +127,39 @@ func TestGuardUsesProxyHeader(t *testing.T) {
 	rec = serve(h, "10.0.0.1:1", map[string]string{"X-Forwarded-For": "192.0.2.1", "Authorization": "Bearer good"})
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("failing client not blocked: status %d", rec.Code)
+	}
+}
+
+func TestGuardAcceptsTokenInURL(t *testing.T) {
+	var seen *http.Request
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r
+		w.WriteHeader(http.StatusTeapot)
+	})
+	mux := http.NewServeMux()
+	guarded := (&auth.Guard{Verifier: &fakeVerifier{}, Logger: discard}).Wrap(next)
+	mux.Handle("/mcp", guarded)
+	mux.Handle("/mcp/{"+auth.TokenPathValue+"}", guarded)
+
+	if rec := serve(mux, "192.0.2.1:1", nil, "/mcp/good"); rec.Code != http.StatusTeapot {
+		t.Fatalf("token in URL: status %d", rec.Code)
+	}
+	// Downstream sees the token only in the header, not in the URL.
+	if got := seen.Header.Get("Authorization"); got != "Bearer good" {
+		t.Errorf("Authorization = %q", got)
+	}
+	if seen.URL.Path != "/mcp" || seen.RequestURI != "/mcp" || seen.PathValue(auth.TokenPathValue) != "" {
+		t.Errorf("token still in request: path %q, uri %q, value %q", seen.URL.Path, seen.RequestURI, seen.PathValue(auth.TokenPathValue))
+	}
+
+	if rec := serve(mux, "192.0.2.1:1", nil, "/mcp/bad"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid token in URL: status %d", rec.Code)
+	}
+	// The header wins over the URL.
+	if rec := serve(mux, "192.0.2.1:1", bearer("bad"), "/mcp/good"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("header should take precedence: status %d", rec.Code)
+	}
+	if rec := serve(mux, "192.0.2.1:1", nil, "/mcp"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: status %d", rec.Code)
 	}
 }

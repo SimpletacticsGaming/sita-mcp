@@ -32,7 +32,7 @@ Das Token steht im Klartext in der Konfiguration deines MCP-Clients. Anders als 
 Dasselbe Docker-Image kann beides:
 
 - **`stdio` (Standard):** Claude startet den Container selbst (`docker run -i …`) und redet über stdin/stdout mit ihm. Das Token kommt aus `SITA_TOKEN`.
-- **`http`:** Der Container läuft dauerhaft, z. B. im Swarm, und stellt Streamable HTTP unter `/mcp` bereit. Jeder Client schickt sein eigenes Token mit: `Authorization: Bearer <token>`.
+- **`http`:** Der Container läuft dauerhaft, z. B. im Swarm, und stellt Streamable HTTP unter `/mcp` bereit. Jeder Client schickt sein eigenes Token mit, entweder als Header `Authorization: Bearer <token>` an `/mcp` oder in der URL `/mcp/<token>`. Steht beides da, gilt der Header.
 
   Ohne gültiges Token antwortet der Server mit `401`. Pro Token meldet er sich einmal beim Backend an (`POST /login/mcp`) und nutzt dann die Session, bis sie ungültig wird. Wird das Token widerrufen, löscht das Backend auch seine Sessions, und der nächste Aufruf scheitert. TLS muss der Reverse Proxy übernehmen.
 
@@ -75,19 +75,13 @@ Der MCP läuft im Swarm unter `https://simpletactics.de/mcp` (geplant, siehe [do
 claude mcp add --transport http sita https://simpletactics.de/mcp --header "Authorization: Bearer sita_mcp_…"
 ```
 
-**Claude Desktop:** Remote-Connectors können keine eigenen Header setzen. Als Umweg dient die Brücke [`mcp-remote`](https://www.npmjs.com/package/mcp-remote), die Node.js braucht. Diesen Weg habe ich noch nicht getestet.
+**Claude Desktop und claude.ai:** Diese Clients können keine eigenen Header setzen. Deshalb kommt das Token in die URL: unter *Einstellungen → Connectors → Eigenen Connector hinzufügen* als URL
 
-```json
-{
-  "mcpServers": {
-    "sita": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "https://simpletactics.de/mcp", "--header", "Authorization:${AUTH_HEADER}"],
-      "env": { "AUTH_HEADER": "Bearer sita_mcp_…" }
-    }
-  }
-}
 ```
+https://simpletactics.de/mcp/sita_mcp_…
+```
+
+eintragen, ohne OAuth-Angaben. Die URL ist damit selbst geheim und gehört wie ein Passwort behandelt.
 
 ## Konfiguration
 

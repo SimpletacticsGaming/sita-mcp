@@ -139,13 +139,7 @@ src/app/elements/menuliste/menulist-right-main/menu-list-profile/menu-list-profi
 - **Neues Token:** nur ein Name (Pflicht, max. 100 Zeichen). Der Hinweis „Läuft nach einem Jahr ab“ steht daneben. Ist das Limit erreicht, wird der Button deaktiviert und erklärt warum.
 - **Nach dem Erstellen:** Ein Hinweiskasten zeigt das Token einmalig an, mit Kopieren-Button (`@angular/cdk/clipboard`). Dazu die Warnung „Wird nur jetzt angezeigt“ und darunter Snippets mit eingesetztem Token zum Kopieren:
   - Claude Code: `claude mcp add --transport http sita https://simpletactics.de/mcp --header "Authorization: Bearer <token>"`
-  - Claude Desktop: Remote-Connectors in Claude Desktop können keine eigenen Header setzen. Der Umweg ist die Brücke `mcp-remote`, die Node.js braucht und vor der Umsetzung noch getestet werden muss:
-    ```json
-    { "mcpServers": { "sita": {
-        "command": "npx",
-        "args": ["-y", "mcp-remote", "https://simpletactics.de/mcp", "--header", "Authorization:${AUTH_HEADER}"],
-        "env": { "AUTH_HEADER": "Bearer <token>" } } } }
-    ```
+  - Claude Desktop und claude.ai (unter *Einstellungen → Connectors → Eigenen Connector hinzufügen*): `https://simpletactics.de/mcp/<token>`. Dazu der Hinweis, dass diese URL selbst geheim ist.
 - **Datenschutz:** Das Token bleibt nur im Komponenten-State. Es landet nicht im Router-State, nicht im `localStorage` und nicht in Logs.
 - **Fehler:** Der globale `errorInterceptor` springt bei jedem 403 auf die Zugriff-verweigert-Seite. Die Fehler dieser Seite (400, 409) zeigt die Seite selbst inline an.
 
@@ -172,7 +166,7 @@ src/app/elements/menuliste/menulist-right-main/menu-list-profile/menu-list-profi
 4. **sita-mcp:** veröffentlichen, erstes Release.
 5. **Deployment:** Service im Stack `sita` und Route im Reverse Proxy (siehe unten).
 6. **Ende-zu-Ende-Test:** Token im Profil erzeugen, mit der URL in Claude Code eintragen, `wiki_search` und `wiki_get_page` aufrufen, Token widerrufen. Danach muss der nächste Aufruf mit „Token ungültig“ scheitern.
-7. Später: Schreib-Tools, OAuth für Remote-Connectors (dann ohne `mcp-remote` in Claude Desktop und claude.ai).
+7. Später: Schreib-Tools, OAuth für Remote-Connectors (dann ohne Token in der URL).
 
 ## Deployment (deployment-repo und Reverse Proxy)
 
@@ -213,7 +207,10 @@ Secrets braucht der Service keine: Die Tokens bringen die Nutzer mit.
 
 **Reverse Proxy:** Die Konfiguration liegt in keinem Repo. Nötig ist:
 
-- Eine Route `https://simpletactics.de/mcp` auf den Service `mcp`, Port 8080, Pfad `/mcp`. Anders als bei `/backend/` darf das Präfix nicht abgeschnitten werden.
+- Eine Route `https://simpletactics.de/mcp` **und** `/mcp/…` auf den Service `mcp`, Port 8080. Anders als bei `/backend/` darf das Präfix nicht abgeschnitten werden.
+- **Kein Access-Log für `/mcp/…`:** Bei Claude Desktop und claude.ai steht das Token in der URL. Bei nginx reicht ein eigener `location /mcp/ { access_log off; … }`. Alternativ wird der Pfad maskiert geloggt. Der MCP selbst loggt keine URLs und entfernt das Token aus der URL, bevor er die Anfrage verarbeitet.
 - `X-Forwarded-For` setzen, bei nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`. Der MCP wertet den letzten Eintrag aus, also den, den der Proxy selbst anhängt. Davorgesetzte gefälschte Einträge bleiben wirkungslos.
 - Antworten nicht puffern, weil Streamable HTTP Server-Sent Events nutzen kann. Bei nginx: `proxy_buffering off;` und ein großzügiges `proxy_read_timeout`.
 - Nur über HTTPS erreichbar machen, weil die Tokens im Header mitgehen.
+
+**Hinweis zum Limiter:** Remote-Connectors in Claude Desktop und claude.ai verbinden sich von den Servern von Anthropic aus, nicht vom Rechner des Nutzers. Viele Nutzer teilen sich dann wenige IPs. Wer dort wiederholt falsche Tokens benutzt, kann für 15 Minuten auch andere claude.ai-Nutzer sperren. Für den Start ist das vertretbar, Tokens zu erraten ist ohnehin aussichtslos. Wird es zum Problem, `MCP_AUTH_MAX_FAILURES` hochsetzen.

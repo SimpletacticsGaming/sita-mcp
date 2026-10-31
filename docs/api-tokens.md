@@ -106,7 +106,7 @@ Weitere Regeln:
 ## Verhalten des MCP
 
 - **stdio:** Das Token kommt aus `SITA_TOKEN`. Beim ersten Aufruf meldet sich der MCP an und nutzt die Session, bis sie ungültig wird.
-- **HTTP:** Clients schicken `Authorization: Bearer <token>`.
+- **HTTP:** Clients schicken das Token als `Authorization: Bearer <token>` an `/mcp` (Claude Code) oder in der URL `/mcp/<token>` (Claude Desktop und claude.ai, die keine eigenen Header setzen können).
   - Der MCP hält eine Session pro Token. Der erste Request löst den Login aus, alle weiteren nutzen die Session.
   - Clients, die wiederholt ungültige Tokens schicken, sperrt er pro IP (`MCP_AUTH_MAX_FAILURES`, `MCP_AUTH_BLOCK_WINDOW`).
 - **Tokens im Log:** Der MCP loggt Tokens und Session-ids nie. Für seine Caches nutzt er nur den SHA-256 des Tokens.
