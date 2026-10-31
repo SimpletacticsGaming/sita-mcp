@@ -21,7 +21,7 @@ Plan zur Umsetzung von [api-tokens.md](api-tokens.md). Er beruht auf einer Analy
 | 2 | Absicherungen | **Entschieden:** Widerruf und Ablauf beenden Sessions; Token-Sessions dürfen keine Tokens verwalten |
 | 3 | Wer darf Tokens anlegen? | **Entschieden:** jeder eingeloggte Nutzer, kein eigenes Recht |
 | 4 | Ablaufzeiten | **Entschieden:** immer 1 Jahr, nicht wählbar |
-| 5 | Widerruf bei Passwortänderung | Vorschlag: ja beim Admin-Reset, nein bei eigener Änderung |
+| 5 | Widerruf bei Passwort-Reset | **Entschieden:** Setzt ein Admin das Passwort zurück, werden alle MCP-Tokens des Nutzers gelöscht (und damit ihre Sessions). Ändert der Nutzer es selbst, bleiben sie bestehen |
 | 6 | Basis-Branch, Migrationsnummer | Vorschlag: auf `main` nach dem Merge von #192, als `V017__create_mcp_tokens.sql` |
 | 7 | Wie kommen Nutzer an das Image? | Vorschlag: `promote.yml` taggt zusätzlich `latest`. Klären, ob `registry.simpletactics.de` ohne Login lesbar ist, sonst zusätzlich öffentlich auf GHCR veröffentlichen |
 | 8 | HTTP-Modus deployen? | Vorschlag: erstmal nicht, nur stdio |
