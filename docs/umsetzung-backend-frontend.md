@@ -19,8 +19,8 @@ Plan zur Umsetzung von [api-tokens.md](api-tokens.md). Er beruht auf einer Analy
 |---|---|---|
 | 1 | Wie meldet sich der MCP an? | **Entschieden:** Token gegen Session tauschen (`POST /login/mcp`), danach wie das Frontend |
 | 2 | Absicherungen | **Entschieden:** Widerruf und Ablauf beenden Sessions; Token-Sessions dürfen keine Tokens verwalten |
-| 3 | Wer darf Tokens anlegen? | Vorschlag: jeder eingeloggte Nutzer, kein eigenes Recht |
-| 4 | Ablaufzeiten | Vorschlag: 30 / 90 / 365 Tage, Standard 90, kein „nie“ |
+| 3 | Wer darf Tokens anlegen? | **Entschieden:** jeder eingeloggte Nutzer, kein eigenes Recht |
+| 4 | Ablaufzeiten | **Entschieden:** immer 1 Jahr, nicht wählbar |
 | 5 | Widerruf bei Passwortänderung | Vorschlag: ja beim Admin-Reset, nein bei eigener Änderung |
 | 6 | Basis-Branch, Migrationsnummer | Vorschlag: auf `main` nach dem Merge von #192, als `V017__create_mcp_tokens.sql` |
 | 7 | Wie kommen Nutzer an das Image? | Vorschlag: `promote.yml` taggt zusätzlich `latest`. Klären, ob `registry.simpletactics.de` ohne Login lesbar ist, sonst zusätzlich öffentlich auf GHCR veröffentlichen |
@@ -74,7 +74,7 @@ fun loginWithMcpToken(@RequestBody login: McpLogin): ResponseEntity<LoginDto> {
 ```kotlin
 @Service
 class McpTokenService(private val port: McpTokenPort, private val userService: UserService) {
-    fun create(username: String, name: String, expiresInDays: Int): CreatedMcpToken  // Limit 10, erlaubt: 30/90/365
+    fun create(username: String, name: String): CreatedMcpToken                      // Limit 10, Ablauf: jetzt + 1 Jahr
     fun list(username: String): List<McpToken>
     fun delete(username: String, id: Int): Boolean                                   // false → 404
     fun deleteAllForUser(userId: Int)
@@ -113,7 +113,7 @@ Kotest mit `FunSpecIT` und MockMvc, wie `LoginControllerTestIT`. Testdaten komme
 - **Widerruf:** `DELETE /api/mcp-tokens/{id}` löscht auch die Sessions des Tokens. Der nächste Request mit dieser Session liefert 403, `/loggedIn` liefert false.
 - **Ablauf:** Eine Session, deren Token abgelaufen ist, gilt als abgelaufen, auch wenn ihr eigenes `expires_at` in der Zukunft liegt.
 - **Verwaltung mit Token-Session:** `GET`, `POST` und `DELETE /api/mcp-tokens` liefern 403.
-- **Verwaltung mit Login-Session:** anlegen (Klartext nur in der Antwort, in der DB nur der Hash), auflisten, löschen. Das Limit von 10 ergibt 409, ungültiger Name oder Ablauf ergibt 400, eine fremde id ergibt 404.
+- **Verwaltung mit Login-Session:** anlegen (Klartext nur in der Antwort, in der DB nur der Hash), auflisten, löschen. Das Limit von 10 ergibt 409, ein ungültiger Name ergibt 400, eine fremde id ergibt 404.
 - **Admin-Reset** löscht die Tokens des Nutzers.
 - **Bestehende Tests** für Login und Session bleiben grün.
 
@@ -136,7 +136,7 @@ src/app/elements/menuliste/menulist-right-main/menu-list-profile/menu-list-profi
 
 - **Erklärtext** in zwei Sätzen: wofür das Token ist, dass man es jederzeit widerrufen kann und dass man es wie ein Passwort behandeln soll.
 - **Liste** (Material-Tabelle): Name, erstellt, zuletzt genutzt („nie“), läuft ab. Je Zeile ein Button „Widerrufen“, der das vorhandene `DeleteModalComponent` öffnet, z. B. mit dem Text „Token ‚Laptop‘ widerrufen? MCP-Clients mit diesem Token verlieren sofort den Zugriff.“
-- **Neues Token:** Name (Pflicht, max. 100 Zeichen) und Ablauf als `mat-select` mit 30, 90 (Standard) oder 365 Tagen. Ist das Limit erreicht, wird der Button deaktiviert und erklärt warum.
+- **Neues Token:** nur ein Name (Pflicht, max. 100 Zeichen). Der Hinweis „Läuft nach einem Jahr ab“ steht daneben. Ist das Limit erreicht, wird der Button deaktiviert und erklärt warum.
 - **Nach dem Erstellen:** Ein Hinweiskasten zeigt das Token einmalig an, mit Kopieren-Button (`@angular/cdk/clipboard`). Dazu die Warnung „Wird nur jetzt angezeigt“ und darunter Snippets mit eingesetztem Token zum Kopieren:
   - Claude Code: `claude mcp add sita -e SITA_TOKEN=<token> -- docker run -i --rm -e SITA_TOKEN registry.simpletactics.de/sita-mcp:latest`
   - Claude Desktop: der JSON-Block aus dem README.

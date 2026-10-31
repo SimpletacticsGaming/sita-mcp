@@ -17,7 +17,7 @@ So muss im Backend möglichst wenig angepasst werden. Eine Token-Session hat die
 - **Format:** `sita_mcp_` gefolgt von 32 kryptografisch zufälligen Bytes in Base64url ohne Padding (43 Zeichen). Am Präfix sind Tokens in Configs, Logs und beim Secret Scanning sofort erkennbar.
 - **Speicherung:** nur der **SHA-256-Hash** (hex), nie der Klartext. Bei 256 Bit Zufall ist ein langsamer Hash wie BCrypt unnötig, und SHA-256 lässt sich direkt per Index nachschlagen.
 - **Klartext** gibt das Backend genau einmal zurück, beim Erstellen.
-- **Ablauf:** 30, 90 oder 365 Tage. Tokens ohne Ablauf gibt es nicht, damit vergessene Tokens von selbst auslaufen.
+- **Ablauf:** immer 1 Jahr nach dem Erstellen. Tokens ohne Ablauf gibt es nicht, damit vergessene Tokens von selbst auslaufen.
 - **Widerruf:** Das Token wird gelöscht.
 
 ## Datenmodell
@@ -94,7 +94,7 @@ Unter `/api/**`, also nur mit Session nutzbar. Mit einer Token-Session antworten
 | Methode | Pfad | Body | Antwort |
 |---|---|---|---|
 | GET | `/api/mcp-tokens` | – | `200 [{ id, name, createdAt, lastUsedAt, expiresAt }]`, nie der Klartext |
-| POST | `/api/mcp-tokens` | `{ "name": "Laptop", "expiresInDays": 90 }` | `201 { id, name, createdAt, expiresAt, token }`, `token` nur hier. `400` bei leerem oder zu langem Namen (max. 100) oder einem anderen Ablauf als 30, 90 oder 365. `409` bei mehr als 10 Tokens. |
+| POST | `/api/mcp-tokens` | `{ "name": "Laptop" }` | `201 { id, name, createdAt, expiresAt, token }`, `token` nur hier, `expiresAt` = jetzt + 1 Jahr. `400` bei leerem oder zu langem Namen (max. 100). `409` bei mehr als 10 Tokens. |
 | DELETE | `/api/mcp-tokens/{id}` | – | `204`; löscht Token und Sessions. `404` bei fremder oder unbekannter id |
 
 Weitere Regeln:
