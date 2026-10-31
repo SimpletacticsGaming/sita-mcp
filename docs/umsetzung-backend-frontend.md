@@ -10,7 +10,7 @@ Plan zur Umsetzung von [api-tokens.md](api-tokens.md). Er beruht auf einer Analy
 |---|---|---|
 | Backend | 1 Migration, Token-Port/-Adapter/-Service, Login-Endpunkt, Verwaltungs-Controller, kleine Erweiterung der Session-Klassen | am besten nach #192 |
 | Frontend | Profil-Unterseite „MCP-Tokens“, Service, Menü-Button | Backend-Endpunkte |
-| sita-mcp | fertig umgestellt; noch Repo veröffentlichen und erstes Release | Backend für einen echten Test |
+| sita-mcp | fertig umgestellt und auf GitHub; noch das erste Release | Backend für einen echten Test |
 | Deployment | neuer Service `mcp` im Stack `sita` (deployment-repo) und eine Route `/mcp` im Reverse Proxy | erstes Release von sita-mcp |
 
 ## Entscheidungen
@@ -163,7 +163,7 @@ src/app/elements/menuliste/menulist-right-main/menu-list-profile/menu-list-profi
 1. #192 mergen (wiki-service), damit die Migrationsnummer feststeht.
 2. **Backend-PR** (Feature-Branch, Conventional Commits wie in den neuen Workflows) → Review → Deploy.
 3. **Frontend-PR** → Review → Deploy.
-4. **sita-mcp:** veröffentlichen, erstes Release.
+4. **sita-mcp:** erstes Release.
 5. **Deployment:** Service im Stack `sita` und Route im Reverse Proxy (siehe unten).
 6. **Ende-zu-Ende-Test:** Token im Profil erzeugen, mit der URL in Claude Code eintragen, `wiki_search` und `wiki_get_page` aufrufen, Token widerrufen. Danach muss der nächste Aufruf mit „Token ungültig“ scheitern.
 7. Später: Schreib-Tools, OAuth für Remote-Connectors (dann ohne Token in der URL).
